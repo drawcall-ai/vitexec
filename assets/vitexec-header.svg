@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="420" viewBox="0 0 1440 420" role="img" aria-label="vitexec header">
+  <rect width="1440" height="420" fill="#0b0d10"/>
+  <g opacity="0.18" stroke="#9ca3af" stroke-width="1">
+    <path d="M0 70h1440M0 140h1440M0 210h1440M0 280h1440M0 350h1440"/>
+    <path d="M120 0v420M240 0v420M360 0v420M480 0v420M600 0v420M720 0v420M840 0v420M960 0v420M1080 0v420M1200 0v420M1320 0v420"/>
+  </g>
+  <rect x="92" y="82" width="1256" height="256" rx="18" fill="#11141a" stroke="#252a33"/>
+  <rect x="92" y="82" width="1256" height="42" rx="18" fill="#151923"/>
+  <circle cx="121" cy="103" r="6" fill="#ef4444"/>
+  <circle cx="143" cy="103" r="6" fill="#f59e0b"/>
+  <circle cx="165" cy="103" r="6" fill="#22c55e"/>
+  <text x="118" y="178" fill="#f8fafc" font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="42" font-weight="700">vitexec</text>
+  <text x="118" y="222" fill="#9ca3af" font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="22">run a snippet inside a live Vite app</text>
+  <text x="118" y="274" fill="#a7f3d0" font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="20">$ vitexec http://localhost:5173/cart 'console.log(store.getState())'</text>
+  <g font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="18">
+    <rect x="790" y="154" width="496" height="126" rx="12" fill="#0b0d10" stroke="#29313d"/>
+    <text x="820" y="194" fill="#9ca3af">logs:</text>
+    <text x="820" y="230" fill="#86efac">[log]</text>
+    <text x="892" y="230" fill="#e5e7eb">cart {"count":1,"total":49}</text>
+  </g>
+</svg>
