@@ -26,7 +26,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org/
           always-auth: true
           cache: pnpm
@@ -34,8 +34,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Update npm for OIDC trusted publishing
-        run: npm install -g npm@latest
+      - name: Check npm
+        run: npm --version
 
       - name: Install Playwright browser
         run: pnpm exec playwright install --with-deps chromium
