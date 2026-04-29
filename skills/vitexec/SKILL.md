@@ -24,29 +24,18 @@ pnpm add -D vitexec playwright
 pnpm exec playwright install chromium
 ```
 
-Ensure the Vite app uses the plugin:
-
-```ts
-import { defineConfig } from "vite";
-import { vitexec } from "vitexec";
-
-export default defineConfig({
-  plugins: [vitexec()]
-});
-```
-
 ## Workflow
 
-1. Start or reuse the Vite dev server.
-2. Identify a page URL, usually `http://localhost:5173/`.
-3. Write a small snippet that imports app modules or reads browser state.
-4. Run `vitexec <url> '<snippet>'`.
+1. Identify the page path if it is not `/`.
+2. Write a small snippet that imports app modules or reads browser state.
+3. Run `vitexec '<snippet>'`, or add `--path <path>` for a route.
+4. Add `--config <path>` only when Vite config is not in the default location.
 5. Treat stdout as browser logs. It starts with `logs:`.
 
 Example:
 
 ```sh
-vitexec http://localhost:5173/ 'console.log("ready")'
+vitexec 'console.log("ready")'
 ```
 
 Expected shape:
@@ -61,7 +50,7 @@ logs:
 Read client state after interaction:
 
 ```sh
-vitexec http://localhost:5173/cart '
+vitexec --path /cart '
   import { useCartStore } from "/src/store/cart.ts";
 
   document.querySelector("[data-testid=add-to-cart]")?.click();
@@ -74,7 +63,7 @@ vitexec http://localhost:5173/cart '
 Inspect imported app objects:
 
 ```sh
-vitexec http://localhost:5173/ '
+vitexec '
   import { camera, cube, Vector3 } from "/src/scene-state.ts";
   const p = cube.getWorldPosition(new Vector3()).applyMatrix4(camera.matrixWorldInverse);
   console.log("front-left", p.z < 0 && p.x < 0);
@@ -84,13 +73,25 @@ vitexec http://localhost:5173/ '
 Capture a screenshot:
 
 ```sh
-vitexec --screenshot ./artifacts/page.png http://localhost:5173/ 'console.log("captured")'
+vitexec --screenshot ./artifacts/page.png 'console.log("captured")'
+```
+
+Record a video:
+
+```sh
+vitexec --record ./artifacts/page.webm 'console.log("recorded")'
 ```
 
 Use GPU mode for canvas/WebGL/Three.js checks:
 
 ```sh
-vitexec --gpu http://localhost:5173/ 'console.log(Boolean(document.createElement("canvas").getContext("webgl")))'
+vitexec --gpu 'console.log(Boolean(document.createElement("canvas").getContext("webgl")))'
+```
+
+Use a custom Vite config location:
+
+```sh
+vitexec --config ./apps/web/vite.config.ts --path /dashboard 'console.log("ready")'
 ```
 
 ## Interpreting Output
@@ -103,9 +104,10 @@ Useful lines:
 [page error] ...
 [http 404] GET ... Not Found
 [screenshot] ./path.png
+[recording] ./path.webm
 ```
 
-If output is empty, the snippet may not have logged anything, the page may not have loaded, or the wrong URL was used.
+If output is empty, the snippet may not have logged anything, the page may not have loaded, or the wrong path was used.
 
 If imports fail, prefer browser-root app paths such as `/src/store.ts`, not local filesystem paths.
 
@@ -114,6 +116,9 @@ If imports fail, prefer browser-root app paths such as `/src/store.ts`, not loca
 - Keep snippets short and focused on one question.
 - Prefer importing app modules over scraping DOM when state is exported.
 - Log JSON for structured data: `console.log("state", JSON.stringify(value))`.
+- Use `--path <path>` when the state lives on a route other than `/`.
+- Use `--config <path>` when the project has a non-standard Vite config location.
 - Use `--gpu` for WebGL/canvas/Three.js behavior.
 - Use `--screenshot <path>` when visual state matters.
+- Use `--record <path>` when an interaction sequence matters.
 - Do not leave temporary code in the app when `vitexec` can inspect it from outside.

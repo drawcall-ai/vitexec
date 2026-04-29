@@ -13,12 +13,6 @@
     "url": "https://github.com/drawcall-ai/vitexec/issues"
   },
   "homepage": "https://github.com/drawcall-ai/vitexec#readme",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
   "bin": {
     "vitexec": "./dist/cli.js"
   },
@@ -32,8 +26,7 @@
   },
   "dependencies": {
     "commander": "^14.0.3",
-    "playwright": "^1.52.0",
-    "zod": "^4.3.6"
+    "playwright": "^1.52.0"
   },
   "devDependencies": {
     "vite": "^8.0.10",

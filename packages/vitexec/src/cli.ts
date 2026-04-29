@@ -12,29 +12,57 @@ import {
   type Request,
   type Response
 } from "playwright";
-import { buildVitexecUrl, uploadCode } from "./index.js";
+import { createServer, type ViteDevServer } from "vite";
+import { vitexec } from "./index.js";
+
+declare global {
+  var __vitexecRuns: Record<string, Promise<unknown> | undefined>;
+}
 
 export const VITEXEC_TIMEOUT_MS = 10 * 60 * 1000;
 
 export type RunVitexecOptions = {
+  configFile?: string | false;
   gpu?: boolean;
+  path?: string;
+  recordPath?: string;
+  root?: string;
   screenshotPath?: string;
   timeoutMs?: number;
 };
 
 export async function runVitexec(
-  url: string,
   code: string,
   options: RunVitexecOptions = {}
 ): Promise<string> {
   const id = randomUUID();
+  const server = await startViteServer(id, code, options);
+
+  try {
+    return await runVitexecInServer(server, id, options);
+  } finally {
+    await server.close();
+  }
+}
+
+async function runVitexecInServer(
+  server: ViteDevServer,
+  id: string,
+  options: RunVitexecOptions
+): Promise<string> {
   const logs: string[] = [];
   const timeoutMs = options.timeoutMs ?? VITEXEC_TIMEOUT_MS;
-
-  await uploadCode(url, id, code);
+  const url = buildServerPageUrl(server, options.path);
 
   const browser = await launchBrowser(options);
-  const page = await browser.newPage();
+  const context = options.recordPath
+    ? await browser.newContext({
+        recordVideo: {
+          dir: dirname(options.recordPath)
+        }
+      })
+    : undefined;
+  const page = context ? await context.newPage() : await browser.newPage();
   page.setDefaultTimeout(timeoutMs);
   page.setDefaultNavigationTimeout(timeoutMs);
   page.on("console", (message) => void collectConsole(logs, message));
@@ -45,7 +73,7 @@ export async function runVitexec(
   });
 
   try {
-    const response = await page.goto(buildVitexecUrl(url, id), {
+    const response = await page.goto(url, {
       timeout: timeoutMs,
       waitUntil: "networkidle"
     });
@@ -57,7 +85,7 @@ export async function runVitexec(
       );
     }
 
-    await page.waitForTimeout(100);
+    await waitForInjectedCode(page, id);
     if (options.screenshotPath) {
       await saveScreenshot(page, options.screenshotPath);
       logs.push(`[screenshot] ${options.screenshotPath}`);
@@ -66,10 +94,53 @@ export async function runVitexec(
     if (!isTimeoutError(error)) throw error;
     logs.push(`[error] timeout after ${formatDuration(timeoutMs)}: vitexec stopped waiting for the page.`);
   } finally {
+    if (options.recordPath) {
+      await saveRecording(page, options.recordPath);
+      logs.push(`[recording] ${options.recordPath}`);
+    }
+    await context?.close();
     await browser.close();
   }
 
   return logs.join("\n");
+}
+
+async function startViteServer(
+  id: string,
+  code: string,
+  options: RunVitexecOptions
+): Promise<ViteDevServer> {
+  const server = await createServer({
+    configFile: options.configFile,
+    root: options.root,
+    logLevel: "silent",
+    server: {
+      host: "127.0.0.1",
+      open: false,
+      port: 0,
+      strictPort: false
+    },
+    plugins: [vitexec({ code, id })]
+  });
+
+  await server.listen();
+  return server;
+}
+
+function buildServerPageUrl(server: ViteDevServer, path = "/"): string {
+  const base = server.resolvedUrls?.local[0];
+  if (base) return new URL(normalizePagePath(path), base).toString();
+
+  const address = server.httpServer?.address();
+  if (!address || typeof address === "string") {
+    throw new Error("Failed to start Vite server.");
+  }
+
+  return new URL(normalizePagePath(path), `http://127.0.0.1:${address.port}/`).toString();
+}
+
+function normalizePagePath(path: string): string {
+  return path.startsWith("/") ? path : `/${path}`;
 }
 
 function launchBrowser(options: RunVitexecOptions): Promise<Browser> {
@@ -85,6 +156,30 @@ async function saveScreenshot(
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await page.screenshot({ path, fullPage: true });
+}
+
+async function waitForInjectedCode(
+  page: Awaited<ReturnType<Browser["newPage"]>>,
+  id: string
+): Promise<void> {
+  await page.waitForFunction(
+    (runId) => Boolean(globalThis.__vitexecRuns?.[runId]),
+    id
+  );
+  await page.evaluate((runId) => globalThis.__vitexecRuns[runId], id);
+}
+
+async function saveRecording(
+  page: Awaited<ReturnType<Browser["newPage"]>>,
+  path: string
+): Promise<void> {
+  const video = page.video();
+  if (!video) throw new Error("Recording was requested, but Playwright did not create a video.");
+
+  await mkdir(dirname(path), { recursive: true });
+  await page.close();
+  await video.saveAs(path);
+  await video.delete().catch(() => undefined);
 }
 
 async function collectConsole(
@@ -138,24 +233,32 @@ function formatValue(value: unknown): string {
 async function main(): Promise<void> {
   const program = new Command()
     .name("vitexec")
-    .description("Run a snippet inside a live Vite app and print browser logs.")
-    .argument("<url>", "Vite dev server page URL")
+    .description("Run a snippet inside a Vite app and print browser logs.")
     .argument("<code...>", "literal snippet to run")
+    .option("--config <path>", "use a specific Vite config file")
     .option("--gpu", "use Chromium's new headless mode with GPU-friendly flags")
+    .option("--path <path>", "Vite page path to open", "/")
+    .option("--record <path>", "write a WebM video recording after the code runs")
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
     .showHelpAfterError()
     .parse();
 
-  const [url, codeParts] = program.processedArgs as [string, string[]];
+  const [codeParts] = program.processedArgs as [string[]];
   const options = program.opts<{
+    config?: string;
     gpu?: boolean;
+    path?: string;
+    record?: string;
     screenshot?: string;
   }>();
 
   const code = codeParts.join(" ");
   try {
-    const logs = await runVitexec(url, code, {
+    const logs = await runVitexec(code, {
+      configFile: options.config,
       gpu: options.gpu,
+      path: options.path,
+      recordPath: options.record,
       screenshotPath: options.screenshot
     });
     console.log(formatCliOutput(logs));

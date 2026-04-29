@@ -19,7 +19,7 @@ Use $vitexec to inspect the cart state after clicking add to cart.
 You click through a checkout flow. The UI looks right. But did the client store update?
 
 ```sh
-vitexec http://localhost:5173/cart '
+vitexec --path /cart '
   import { useCartStore } from "/src/stores/cart.ts";
 
   document.querySelector("[data-testid=add-to-cart]")?.click();
@@ -50,23 +50,46 @@ No temporary test page. No debug panel. No guessing from the DOM.
 Run a snippet:
 
 ```sh
-vitexec http://localhost:5173/ 'console.log("ready")'
+vitexec 'console.log("ready")'
 ```
 
 Capture the page:
 
 ```sh
-vitexec --screenshot ./artifacts/cart.png http://localhost:5173/cart '
+vitexec --path /cart --screenshot ./artifacts/cart.png '
   console.log("captured");
+'
+```
+
+Record a browser video:
+
+```sh
+vitexec --record ./artifacts/gameplay.webm '
+  console.log("recorded");
 '
 ```
 
 Use GPU mode for canvas-heavy checks:
 
 ```sh
-vitexec --gpu http://localhost:5173/ '
+vitexec --gpu '
   console.log("webgl", Boolean(document.createElement("canvas").getContext("webgl")));
 '
 ```
 
-The skill explains when to use `vitexec`, how to install it if missing, how to add the plugin, and how to write focused snippets that return useful logs.
+Use a non-standard Vite config location:
+
+```sh
+vitexec --config ./apps/web/vite.config.ts --path /cart 'console.log("ready")'
+```
+
+The skill explains when to use `vitexec`, how to install it if missing, and how to write focused snippets that return useful logs.
+
+
+
+## TODO
+
+[ ] write down the "vitexec" scripts for the examples (maybe even support vitexec <path>?)
+[ ] support sth. like import { pause, resume, advance } from "vitexec/request-animation-frame" (maybe even also support override perfomance.now?)
+[ ] make sure the raf pausing etc also works for WebXR
+[ ] add more examples for vitexec with using mouse click, mouse turning for captured mouse (e.g. w. pmndrs/viverse), keybord input, gamepad (and maybe more)

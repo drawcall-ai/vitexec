@@ -11,7 +11,7 @@
   <circle cx="165" cy="103" r="6" fill="#22c55e"/>
   <text x="118" y="178" fill="#f8fafc" font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="42" font-weight="700">vitexec</text>
   <text x="118" y="222" fill="#9ca3af" font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="22">run a snippet inside a live Vite app</text>
-  <text x="118" y="274" fill="#a7f3d0" font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="20">$ vitexec http://localhost:5173/cart 'console.log(store.getState())'</text>
+  <text x="118" y="274" fill="#a7f3d0" font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="20">$ vitexec --path /cart 'console.log(store.getState())'</text>
   <g font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="18">
     <rect x="790" y="154" width="496" height="126" rx="12" fill="#0b0d10" stroke="#29313d"/>
     <text x="820" y="194" fill="#9ca3af">logs:</text>

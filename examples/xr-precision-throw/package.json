@@ -1,0 +1,28 @@
+{
+  "name": "xr-precision-throw",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@react-three/fiber": "^9.6.1",
+    "@react-three/handle": "^6.6.29",
+    "@react-three/rapier": "^2.2.0",
+    "@react-three/xr": "^6.6.29",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "three": "^0.176.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.176.0",
+    "iwer": "^2.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.10"
+  }
+}
