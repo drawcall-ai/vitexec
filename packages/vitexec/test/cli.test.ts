@@ -155,21 +155,30 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] async done");
   });
 
-  it("can run a richer imported Three.js assertion against the example", async () => {
+  it("can run a richer imported TypeScript assertion against an example", async () => {
     const root = fileURLToPath(
-      new URL("../../../examples/basic-three/", import.meta.url)
+      new URL("../../../examples/chrome-offline-game/", import.meta.url)
     );
 
     const output = await runVitexec(
       `
-        import { camera, cube, Vector3 } from "/src/scene-state.ts";
-        const position = cube.getWorldPosition(new Vector3()).applyMatrix4(camera.matrixWorldInverse);
-        console.log("front-left", position.z < 0 && position.x < 0);
+        import { OfflineRunnerGame } from "/src/game.ts";
+
+        const canvas = document.createElement("canvas");
+        canvas.style.width = "640px";
+        canvas.style.height = "360px";
+        document.body.append(canvas);
+
+        const snapshots = [];
+        const game = new OfflineRunnerGame(canvas, (snapshot) => snapshots.push(snapshot));
+        game.togglePause();
+
+        console.log("paused", game.getSnapshot().isPaused && snapshots.at(-1)?.isPaused);
       `,
       { configFile: false, root }
     );
 
-    expect(output).toContain("[log] front-left true");
+    expect(output).toContain("[log] paused true");
   });
 
   it("loads the project Vite config by default", async () => {
