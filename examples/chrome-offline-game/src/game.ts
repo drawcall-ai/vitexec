@@ -170,8 +170,8 @@ export class OfflineRunnerGame {
   }
 
   private getNextSpawnDelay(): number {
-    const speedPressure = this.speed * 120;
-    return 940 + Math.random() * 520 - speedPressure;
+    const speedPressure = this.speed * 60;
+    return 1_520 + Math.random() * 560 - speedPressure;
   }
 
   private collides(obstacle: Obstacle): boolean {

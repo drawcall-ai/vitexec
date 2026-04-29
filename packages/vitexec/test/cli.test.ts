@@ -1,11 +1,16 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
-import { runVitexec, VITEXEC_TIMEOUT_MS } from "../src/cli.js";
+import {
+  resolveVitexecCodeInputDetails,
+  resolveVitexecCodeInput,
+  runVitexec,
+  VITEXEC_TIMEOUT_MS
+} from "../src/cli.js";
 
 let currentProject: TestProject | undefined;
 let currentTempDir: string | undefined;
@@ -29,6 +34,79 @@ describe("vitexec CLI runner", () => {
     });
 
     expect(output).toContain("[log] loaded");
+  });
+
+  it("resolves a single file path to snippet code", async () => {
+    currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-code-"));
+    const codePath = join(currentTempDir, "inspect.js");
+    await writeFile(codePath, "console.log('from file')", "utf8");
+
+    await expect(resolveVitexecCodeInput([codePath])).resolves.toBe(
+      "console.log('from file')"
+    );
+  });
+
+  it("preserves TypeScript snippet extensions", async () => {
+    currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-code-"));
+    const codePath = join(currentTempDir, "inspect.ts");
+    await writeFile(codePath, "const message: string = 'from ts'; console.log(message)", "utf8");
+
+    await expect(resolveVitexecCodeInputDetails([codePath])).resolves.toEqual({
+      code: "const message: string = 'from ts'; console.log(message)",
+      moduleExtension: ".ts"
+    });
+  });
+
+  it("keeps inline snippets as code when the input is not a file", async () => {
+    await expect(
+      resolveVitexecCodeInput(["console.log('inline')"])
+    ).resolves.toBe("console.log('inline')");
+    await expect(
+      resolveVitexecCodeInput(["console.log", "('split')"])
+    ).resolves.toBe("console.log ('split')");
+  });
+
+  it("keeps long inline snippets as code instead of treating them as paths", async () => {
+    const code = `console.log(${JSON.stringify("x".repeat(1_000))})`;
+
+    await expect(resolveVitexecCodeInput([code])).resolves.toBe(code);
+  });
+
+  it("can run injected code loaded from a file", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>",
+      "inspect.js": "console.log('loaded from file')"
+    });
+    const code = await resolveVitexecCodeInput(
+      ["inspect.js"],
+      currentProject.root
+    );
+
+    const output = await runVitexec(code, {
+      configFile: false,
+      root: currentProject.root
+    });
+
+    expect(output).toContain("[log] loaded from file");
+  });
+
+  it("can run TypeScript code loaded from a file", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>",
+      "inspect.ts": "const message: string = 'loaded from ts'; console.log(message)"
+    });
+    const input = await resolveVitexecCodeInputDetails(
+      ["inspect.ts"],
+      currentProject.root
+    );
+
+    const output = await runVitexec(input.code, {
+      configFile: false,
+      moduleExtension: input.moduleExtension,
+      root: currentProject.root
+    });
+
+    expect(output).toContain("[log] loaded from ts");
   });
 
   it("captures runtime errors from injected code", async () => {

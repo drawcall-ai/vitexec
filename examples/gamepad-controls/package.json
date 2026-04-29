@@ -1,19 +1,17 @@
 {
-  "name": "basic-three",
+  "name": "gamepad-controls",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
-  },
-  "dependencies": {
-    "three": "^0.176.0"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "vitexec:gamepad": "vitexec ./vitexec/use-gamepad.ts"
   },
   "devDependencies": {
-    "@types/three": "^0.176.0",
     "typescript": "^5.8.3",
+    "vitexec": "workspace:*",
     "vite": "^8.0.10"
   }
 }

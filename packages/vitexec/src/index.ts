@@ -7,6 +7,7 @@ const VITEXEC_MODULE_DIR = "/.vitexec/code";
 export type VitexecPluginOptions = {
   code: string;
   id: string;
+  moduleExtension?: string;
 };
 
 function decodeId(value: string): string | undefined {
@@ -25,19 +26,19 @@ function codeIdFromUrl(value: string): string | undefined {
   return decodeId(encodedId);
 }
 
-function virtualModuleId(id: string): string {
-  return `${VITEXEC_MODULE_DIR}/${encodeURIComponent(id)}.js`;
+function virtualModuleId(id: string, extension: string): string {
+  return `${VITEXEC_MODULE_DIR}/${encodeURIComponent(id)}${extension}`;
 }
 
-function resolvedModuleId(root: string, id: string): string {
-  return normalizePath(posix.join(normalizePath(root), virtualModuleId(id)));
+function resolvedModuleId(root: string, id: string, extension: string): string {
+  return normalizePath(posix.join(normalizePath(root), virtualModuleId(id, extension)));
 }
 
-function idFromResolvedModuleId(root: string, id: string): string | undefined {
+function idFromResolvedModuleId(root: string, id: string, extension: string): string | undefined {
   const prefix = `${normalizePath(root)}${VITEXEC_MODULE_DIR}/`;
-  if (!id.startsWith(prefix) || !id.endsWith(".js")) return undefined;
+  if (!id.startsWith(prefix) || !id.endsWith(extension)) return undefined;
 
-  const encodedId = id.slice(prefix.length, -".js".length);
+  const encodedId = id.slice(prefix.length, -extension.length);
   return decodeId(encodedId);
 }
 
@@ -51,6 +52,7 @@ globalThis.__vitexecRuns[${JSON.stringify(id)}] = import(${JSON.stringify(VITEXE
 export function vitexec(options: VitexecPluginOptions): Plugin {
   let isDevServer = false;
   let root = "";
+  const moduleExtension = options.moduleExtension ?? ".js";
 
   return {
     name: "vitexec",
@@ -80,12 +82,12 @@ export function vitexec(options: VitexecPluginOptions): Plugin {
     },
     resolveId(id) {
       const codeId = codeIdFromUrl(id);
-      if (codeId === options.id) return resolvedModuleId(root, codeId);
+      if (codeId === options.id) return resolvedModuleId(root, codeId, moduleExtension);
 
       return undefined;
     },
     load(id) {
-      const codeId = idFromResolvedModuleId(root, id);
+      const codeId = idFromResolvedModuleId(root, id, moduleExtension);
       if (codeId !== options.id) return undefined;
 
       return options.code;

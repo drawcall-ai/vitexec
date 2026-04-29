@@ -1,0 +1,17 @@
+{
+  "name": "captured-mouse-controls",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "vitexec:pointer-lock": "vitexec --gpu ./vitexec/captured-mouse-turn.ts"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitexec": "workspace:*",
+    "vite": "^8.0.10"
+  }
+}

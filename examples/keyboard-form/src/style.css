@@ -1,0 +1,57 @@
+html,
+body,
+#app {
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: #f4f7f8;
+  color: #172026;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+
+#app {
+  display: grid;
+  place-items: center;
+}
+
+.form-shell {
+  display: grid;
+  width: min(520px, calc(100vw - 40px));
+  gap: 14px;
+}
+
+label {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+}
+
+input,
+textarea,
+button,
+output {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #b8c7cf;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font: inherit;
+}
+
+textarea {
+  min-height: 140px;
+  resize: vertical;
+}
+
+button {
+  background: #1e6f8f;
+  color: #fff;
+  cursor: pointer;
+}
+
+output {
+  background: #fff;
+}

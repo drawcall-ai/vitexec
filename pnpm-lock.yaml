@@ -21,21 +21,29 @@ importers:
         specifier: ^3.1.2
         version: 3.2.4(@types/node@22.19.17)(lightningcss@1.32.0)
 
-  examples/basic-three:
-    dependencies:
-      three:
-        specifier: ^0.176.0
-        version: 0.176.0
+  examples/canvas-position-click-game:
     devDependencies:
-      '@types/three':
-        specifier: ^0.176.0
-        version: 0.176.0
       typescript:
         specifier: ^5.8.3
         version: 5.9.3
       vite:
         specifier: ^8.0.10
         version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)
+      vitexec:
+        specifier: workspace:*
+        version: link:../../packages/vitexec
+
+  examples/captured-mouse-controls:
+    devDependencies:
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vite:
+        specifier: ^8.0.10
+        version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)
+      vitexec:
+        specifier: workspace:*
+        version: link:../../packages/vitexec
 
   examples/chrome-offline-game:
     devDependencies:
@@ -45,6 +53,42 @@ importers:
       vite:
         specifier: ^8.0.10
         version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)
+
+  examples/gamepad-controls:
+    devDependencies:
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vite:
+        specifier: ^8.0.10
+        version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)
+      vitexec:
+        specifier: workspace:*
+        version: link:../../packages/vitexec
+
+  examples/keyboard-form:
+    devDependencies:
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vite:
+        specifier: ^8.0.10
+        version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)
+      vitexec:
+        specifier: workspace:*
+        version: link:../../packages/vitexec
+
+  examples/mouse-click-target:
+    devDependencies:
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vite:
+        specifier: ^8.0.10
+        version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)
+      vitexec:
+        specifier: workspace:*
+        version: link:../../packages/vitexec
 
   examples/xr-precision-throw:
     dependencies:

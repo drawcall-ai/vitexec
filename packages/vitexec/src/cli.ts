@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, stat } from "node:fs/promises";
+import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import {
@@ -24,6 +24,7 @@ export const VITEXEC_TIMEOUT_MS = 10 * 60 * 1000;
 export type RunVitexecOptions = {
   configFile?: string | false;
   gpu?: boolean;
+  moduleExtension?: string;
   path?: string;
   recordPath?: string;
   root?: string;
@@ -43,6 +44,62 @@ export async function runVitexec(
   } finally {
     await server.close();
   }
+}
+
+export async function resolveVitexecCodeInput(
+  codeParts: string[],
+  cwd = process.cwd()
+): Promise<string> {
+  return (await resolveVitexecCodeInputDetails(codeParts, cwd)).code;
+}
+
+export type ResolvedVitexecCodeInput = {
+  code: string;
+  moduleExtension: string;
+};
+
+export async function resolveVitexecCodeInputDetails(
+  codeParts: string[],
+  cwd = process.cwd()
+): Promise<ResolvedVitexecCodeInput> {
+  if (codeParts.length !== 1) {
+    return { code: codeParts.join(" "), moduleExtension: ".js" };
+  }
+
+  const input = codeParts[0];
+  const filePath = resolve(cwd, input);
+  if (!(await isFile(filePath))) return { code: input, moduleExtension: ".js" };
+
+  return {
+    code: await readFile(filePath, "utf8"),
+    moduleExtension: moduleExtensionFromPath(filePath)
+  };
+}
+
+function moduleExtensionFromPath(path: string): string {
+  const extension = extname(path);
+  return [".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"].includes(extension)
+    ? extension
+    : ".js";
+}
+
+async function isFile(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isFile();
+  } catch (error) {
+    if (isFileMissingError(error)) return false;
+    throw error;
+  }
+}
+
+function isFileMissingError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOENT" ||
+      error.code === "ENOTDIR" ||
+      error.code === "ENAMETOOLONG")
+  );
 }
 
 async function runVitexecInServer(
@@ -120,7 +177,7 @@ async function startViteServer(
       port: 0,
       strictPort: false
     },
-    plugins: [vitexec({ code, id })]
+    plugins: [vitexec({ code, id, moduleExtension: options.moduleExtension })]
   });
 
   await server.listen();
@@ -234,7 +291,7 @@ async function main(): Promise<void> {
   const program = new Command()
     .name("vitexec")
     .description("Run a snippet inside a Vite app and print browser logs.")
-    .argument("<code...>", "literal snippet to run")
+    .argument("<code-or-file...>", "literal snippet to run, or a path to a snippet file")
     .option("--config <path>", "use a specific Vite config file")
     .option("--gpu", "use Chromium's new headless mode with GPU-friendly flags")
     .option("--path <path>", "Vite page path to open", "/")
@@ -252,11 +309,12 @@ async function main(): Promise<void> {
     screenshot?: string;
   }>();
 
-  const code = codeParts.join(" ");
   try {
-    const logs = await runVitexec(code, {
+    const input = await resolveVitexecCodeInputDetails(codeParts);
+    const logs = await runVitexec(input.code, {
       configFile: options.config,
       gpu: options.gpu,
+      moduleExtension: input.moduleExtension,
       path: options.path,
       recordPath: options.record,
       screenshotPath: options.screenshot
