@@ -112,14 +112,17 @@ async function runVitexecInServer(
   const url = buildServerPageUrl(server, options.path);
 
   const browser = await launchBrowser(options);
-  const context = options.recordPath
-    ? await browser.newContext({
-        recordVideo: {
-          dir: dirname(options.recordPath)
+  const context = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    ...(options.recordPath
+      ? {
+          recordVideo: {
+            dir: dirname(options.recordPath)
+          }
         }
-      })
-    : undefined;
-  const page = context ? await context.newPage() : await browser.newPage();
+      : {})
+  });
+  const page = await context.newPage();
   page.setDefaultTimeout(timeoutMs);
   page.setDefaultNavigationTimeout(timeoutMs);
   page.on("console", (message) => void collectConsole(logs, message));
@@ -155,7 +158,7 @@ async function runVitexecInServer(
       await saveRecording(page, options.recordPath);
       logs.push(`[recording] ${options.recordPath}`);
     }
-    await context?.close();
+    await context.close();
     await browser.close();
   }
 

@@ -18,12 +18,29 @@ function decodeId(value: string): string | undefined {
   }
 }
 
-function codeIdFromUrl(value: string): string | undefined {
-  const pathname = value.split("?")[0] ?? value;
-  if (!pathname.startsWith(`${VITEXEC_CODE_ROUTE}/`)) return undefined;
+function codeRouteForBase(base: string): string {
+  return new URL(`.${VITEXEC_CODE_ROUTE}`, baseUrl(base)).pathname;
+}
 
-  const encodedId = pathname.slice(VITEXEC_CODE_ROUTE.length + 1);
+function codeIdFromUrl(value: string, base = "/"): string | undefined {
+  const pathname = pathnameFromUrl(value);
+  const codeRoute = codeRouteForBase(base);
+  const route = pathname.startsWith(`${codeRoute}/`)
+    ? codeRoute
+    : VITEXEC_CODE_ROUTE;
+  if (!pathname.startsWith(`${route}/`)) return undefined;
+
+  const encodedId = pathname.slice(route.length + 1);
   return decodeId(encodedId);
+}
+
+function pathnameFromUrl(value: string): string {
+  return new URL(value, "http://vitexec.local").pathname;
+}
+
+function baseUrl(base: string): URL {
+  const pathname = base.endsWith("/") ? base : `${base}/`;
+  return new URL(pathname, "http://vitexec.local");
 }
 
 function virtualModuleId(id: string, extension: string): string {
@@ -42,15 +59,16 @@ function idFromResolvedModuleId(root: string, id: string, extension: string): st
   return decodeId(encodedId);
 }
 
-function runtimeScript(id: string): string {
+function runtimeScript(id: string, base: string): string {
   return `
 globalThis.__vitexecRuns ??= {};
-globalThis.__vitexecRuns[${JSON.stringify(id)}] = import(${JSON.stringify(VITEXEC_CODE_ROUTE)} + "/" + ${JSON.stringify(encodeURIComponent(id))}).catch(console.error);
+globalThis.__vitexecRuns[${JSON.stringify(id)}] = import(${JSON.stringify(codeRouteForBase(base))} + "/" + ${JSON.stringify(encodeURIComponent(id))}).catch(console.error);
 `;
 }
 
 export function vitexec(options: VitexecPluginOptions): Plugin {
   let isDevServer = false;
+  let base = "/";
   let root = "";
   const moduleExtension = options.moduleExtension ?? ".js";
 
@@ -59,11 +77,12 @@ export function vitexec(options: VitexecPluginOptions): Plugin {
     apply: "serve",
     configResolved(config) {
       isDevServer = config.command === "serve";
+      base = config.base;
       root = normalizePath(config.root);
     },
     configureServer(server) {
       server.middlewares.use((request, response, next) => {
-        const codeId = request.url && codeIdFromUrl(request.url);
+        const codeId = request.url && codeIdFromUrl(request.url, base);
         if (!codeId) return next();
         if (request.method !== "GET") {
           response.statusCode = 405;
@@ -81,7 +100,7 @@ export function vitexec(options: VitexecPluginOptions): Plugin {
       });
     },
     resolveId(id) {
-      const codeId = codeIdFromUrl(id);
+      const codeId = codeIdFromUrl(id, base);
       if (codeId === options.id) return resolvedModuleId(root, codeId, moduleExtension);
 
       return undefined;
@@ -103,7 +122,7 @@ export function vitexec(options: VitexecPluginOptions): Plugin {
             attrs: {
               type: "module"
             },
-            children: runtimeScript(options.id),
+            children: runtimeScript(options.id, base),
             injectTo: "head"
           }
         ]
