@@ -53,6 +53,9 @@ importers:
       vite:
         specifier: ^8.0.10
         version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)
+      vitexec:
+        specifier: workspace:*
+        version: link:../../packages/vitexec
 
   examples/gamepad-controls:
     devDependencies:
@@ -132,6 +135,9 @@ importers:
       vite:
         specifier: ^8.0.10
         version: 8.0.10(@types/node@22.19.17)(esbuild@0.27.7)
+      vitexec:
+        specifier: workspace:*
+        version: link:../../packages/vitexec
 
   packages/vitexec:
     dependencies:

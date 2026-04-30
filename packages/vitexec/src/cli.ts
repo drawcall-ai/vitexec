@@ -3,17 +3,20 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { mkdir, readFile, stat } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import {
   chromium,
   type Browser,
+  type BrowserContext,
   type ConsoleMessage,
+  type Page,
   type Request,
   type Response
 } from "playwright";
 import { createServer, type ViteDevServer } from "vite";
-import { vitexec } from "./index.js";
+import { vitexec, type VitexecModuleExtension } from "./index.js";
 
 declare global {
   var __vitexecRuns: Record<string, Promise<unknown> | undefined>;
@@ -24,7 +27,7 @@ export const VITEXEC_TIMEOUT_MS = 10 * 60 * 1000;
 export type RunVitexecOptions = {
   configFile?: string | false;
   gpu?: boolean;
-  moduleExtension?: string;
+  moduleExtension?: VitexecModuleExtension;
   path?: string;
   recordPath?: string;
   root?: string;
@@ -32,15 +35,15 @@ export type RunVitexecOptions = {
   timeoutMs?: number;
 };
 
-export async function runVitexec(
+export async function* runVitexec(
   code: string,
   options: RunVitexecOptions = {}
-): Promise<string> {
+): AsyncGenerator<string> {
   const id = randomUUID();
   const server = await startViteServer(id, code, options);
 
   try {
-    return await runVitexecInServer(server, id, options);
+    yield* runVitexecInServer(server, id, options);
   } finally {
     await server.close();
   }
@@ -55,7 +58,7 @@ export async function resolveVitexecCodeInput(
 
 export type ResolvedVitexecCodeInput = {
   code: string;
-  moduleExtension: string;
+  moduleExtension: VitexecModuleExtension;
 };
 
 export async function resolveVitexecCodeInputDetails(
@@ -76,11 +79,13 @@ export async function resolveVitexecCodeInputDetails(
   };
 }
 
-function moduleExtensionFromPath(path: string): string {
+function moduleExtensionFromPath(path: string): VitexecModuleExtension {
   const extension = extname(path);
-  return [".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"].includes(extension)
-    ? extension
-    : ".js";
+  return isModuleExtension(extension) ? extension : ".js";
+}
+
+function isModuleExtension(value: string): value is VitexecModuleExtension {
+  return [".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"].includes(value);
 }
 
 async function isFile(path: string): Promise<boolean> {
@@ -102,67 +107,113 @@ function isFileMissingError(error: unknown): boolean {
   );
 }
 
-async function runVitexecInServer(
+async function* runVitexecInServer(
   server: ViteDevServer,
   id: string,
   options: RunVitexecOptions
-): Promise<string> {
-  const logs: string[] = [];
-  const timeoutMs = options.timeoutMs ?? VITEXEC_TIMEOUT_MS;
-  const url = buildServerPageUrl(server, options.path);
-
-  const browser = await launchBrowser(options);
-  const context = await browser.newContext({
-    ignoreHTTPSErrors: true,
-    ...(options.recordPath
-      ? {
-          recordVideo: {
-            dir: dirname(options.recordPath)
-          }
-        }
-      : {})
-  });
-  const page = await context.newPage();
-  page.setDefaultTimeout(timeoutMs);
-  page.setDefaultNavigationTimeout(timeoutMs);
-  page.on("console", (message) => void collectConsole(logs, message));
-  page.on("pageerror", (error) => logs.push(`[page error] ${error.message}`));
-  page.on("requestfailed", (request) => logs.push(formatRequestFailure(request)));
-  page.on("response", (response) => {
-    if (response.status() >= 400) logs.push(formatHttpError(response));
-  });
+): AsyncGenerator<string> {
+  const abort = new AbortController();
+  const lines = new Readable({ objectMode: true, read() {} });
+  const log = (line: string) => {
+    if (!lines.destroyed) lines.push(line);
+  };
+  const run = runVitexecInServerTask(server, id, options, log, abort.signal).then(
+    () => lines.push(null),
+    (error) => lines.destroy(error instanceof Error ? error : new Error(String(error)))
+  );
 
   try {
+    for await (const line of lines) yield line as string;
+    await run;
+  } finally {
+    abort.abort();
+    lines.destroy();
+    await run.catch(() => undefined);
+  }
+}
+
+async function runVitexecInServerTask(
+  server: ViteDevServer,
+  id: string,
+  options: RunVitexecOptions,
+  log: (line: string) => void,
+  signal: AbortSignal
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? VITEXEC_TIMEOUT_MS;
+  const url = buildServerPageUrl(server, options.path);
+  let browser: Browser | undefined;
+  let context: BrowserContext | undefined;
+  let page: Page | undefined;
+  const closeBrowser = () => void browser?.close().catch(() => undefined);
+
+  const pendingConsoleLogs = new Set<Promise<void>>();
+  const collectConsoleLog = (message: ConsoleMessage) => {
+    const pendingLog = collectConsole(log, message);
+    pendingConsoleLogs.add(pendingLog);
+    pendingLog.finally(() => pendingConsoleLogs.delete(pendingLog));
+  };
+  try {
+    browser = await launchBrowser(options);
+    signal.addEventListener("abort", closeBrowser, { once: true });
+    if (signal.aborted) return;
+
+    context = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      ...(options.recordPath && !signal.aborted
+        ? { recordVideo: { dir: dirname(options.recordPath) } }
+        : {})
+    });
+    page = await context.newPage();
+    page.setDefaultTimeout(timeoutMs);
+    page.setDefaultNavigationTimeout(timeoutMs);
+    page.on("console", collectConsoleLog);
+    page.on("pageerror", (error) => log(`[page error] ${error.message}`));
+    page.on("requestfailed", (request) => log(formatRequestFailure(request)));
+    page.on("response", (response) => {
+      if (response.status() >= 400) log(formatHttpError(response));
+    });
+    let hasMainFrameNavigated = false;
+    page.on("framenavigated", (frame) => {
+      if (frame !== page?.mainFrame()) return;
+      if (hasMainFrameNavigated) {
+        log(`[navigation] navigated ${frame.url()}`);
+      }
+      hasMainFrameNavigated = true;
+    });
+    const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
+    await page.exposeFunction("__vitexecReport", injectedCodeFinished.resolve);
+
     const response = await page.goto(url, {
       timeout: timeoutMs,
-      waitUntil: "networkidle"
+      waitUntil: "load"
     });
-
-    if (!response) logs.push("[navigation] no response");
+    if (!response) log("[navigation] no response");
     if (response && !response.ok()) {
-      logs.push(
-        `[navigation] ${response.status()} ${response.statusText()} ${response.url()}`
-      );
+      log(`[navigation] ${response.status()} ${response.statusText()} ${response.url()}`);
     }
 
-    await waitForInjectedCode(page, id);
+    await injectedCodeFinished.promise;
     if (options.screenshotPath) {
       await saveScreenshot(page, options.screenshotPath);
-      logs.push(`[screenshot] ${options.screenshotPath}`);
+      log(`[screenshot] ${options.screenshotPath}`);
     }
   } catch (error) {
+    if (signal.aborted) return;
     if (!isTimeoutError(error)) throw error;
-    logs.push(`[error] timeout after ${formatDuration(timeoutMs)}: vitexec stopped waiting for the page.`);
+    log(`[error] timeout after ${formatDuration(timeoutMs)}: vitexec stopped waiting for the page.`);
   } finally {
-    if (options.recordPath) {
-      await saveRecording(page, options.recordPath);
-      logs.push(`[recording] ${options.recordPath}`);
+    await Promise.allSettled(pendingConsoleLogs);
+    try {
+      if (page && options.recordPath && !signal.aborted) {
+        await saveRecording(page, options.recordPath);
+        log(`[recording] ${options.recordPath}`);
+      }
+    } finally {
+      signal.removeEventListener("abort", closeBrowser);
+      await context?.close().catch(() => undefined);
+      await browser?.close().catch(() => undefined);
     }
-    await context.close();
-    await browser.close();
   }
-
-  return logs.join("\n");
 }
 
 async function startViteServer(
@@ -175,10 +226,12 @@ async function startViteServer(
     root: options.root,
     logLevel: "silent",
     server: {
+      hmr: false,
       host: "127.0.0.1",
       open: false,
       port: 0,
-      strictPort: false
+      strictPort: false,
+      watch: null
     },
     plugins: [vitexec({ code, id, moduleExtension: options.moduleExtension })]
   });
@@ -211,26 +264,43 @@ function launchBrowser(options: RunVitexecOptions): Promise<Browser> {
 }
 
 async function saveScreenshot(
-  page: Awaited<ReturnType<Browser["newPage"]>>,
+  page: Page,
   path: string
 ): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await page.screenshot({ path, fullPage: true });
 }
 
-async function waitForInjectedCode(
-  page: Awaited<ReturnType<Browser["newPage"]>>,
-  id: string
-): Promise<void> {
-  await page.waitForFunction(
-    (runId) => Boolean(globalThis.__vitexecRuns?.[runId]),
-    id
-  );
-  await page.evaluate((runId) => globalThis.__vitexecRuns[runId], id);
+function createInjectedCodeCompletion(timeoutMs: number, signal: AbortSignal): {
+  promise: Promise<void>;
+  resolve: () => void;
+} {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let resolveCompletion: (() => void) | undefined;
+  let rejectCompletion: ((error: Error) => void) | undefined;
+  const abort = () => rejectCompletion?.(createAbortError());
+  const promise = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+    timeout = setTimeout(() => reject(createTimeoutError()), timeoutMs);
+  }).finally(() => {
+    if (timeout) clearTimeout(timeout);
+    signal.removeEventListener("abort", abort);
+  });
+  promise.catch(() => undefined);
+  signal.addEventListener("abort", abort, { once: true });
+  if (signal.aborted) abort();
+
+  return {
+    promise,
+    resolve() {
+      resolveCompletion?.();
+    }
+  };
 }
 
 async function saveRecording(
-  page: Awaited<ReturnType<Browser["newPage"]>>,
+  page: Page,
   path: string
 ): Promise<void> {
   const video = page.video();
@@ -243,7 +313,7 @@ async function saveRecording(
 }
 
 async function collectConsole(
-  logs: string[],
+  log: (line: string) => void,
   message: ConsoleMessage
 ): Promise<void> {
   if (isBrowserResourceError(message)) return;
@@ -252,7 +322,7 @@ async function collectConsole(
     message.args().map(async (argument) => argument.jsonValue().catch(() => argument.toString()))
   );
   const text = values.length ? values.map(formatValue).join(" ") : message.text();
-  logs.push(`[${message.type()}] ${text}`);
+  log(`[${message.type()}] ${text}`);
 }
 
 function isBrowserResourceError(message: ConsoleMessage): boolean {
@@ -275,6 +345,18 @@ function isTimeoutError(error: unknown): boolean {
   return error instanceof Error && error.name === "TimeoutError";
 }
 
+function createTimeoutError(): Error {
+  const error = new Error("Timed out waiting for injected code.");
+  error.name = "TimeoutError";
+  return error;
+}
+
+function createAbortError(): Error {
+  const error = new Error("Vitexec run aborted.");
+  error.name = "AbortError";
+  return error;
+}
+
 function formatDuration(ms: number): string {
   return ms === VITEXEC_TIMEOUT_MS ? "10m" : `${ms}ms`;
 }
@@ -284,7 +366,7 @@ function formatValue(value: unknown): string {
   if (value instanceof Error) return value.message;
 
   try {
-    return JSON.stringify(value);
+    return JSON.stringify(value) ?? String(value);
   } catch {
     return String(value);
   }
@@ -300,6 +382,7 @@ async function main(): Promise<void> {
     .option("--path <path>", "Vite page path to open", "/")
     .option("--record <path>", "write a WebM video recording after the code runs")
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
+    .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
     .showHelpAfterError()
     .parse();
 
@@ -310,27 +393,39 @@ async function main(): Promise<void> {
     path?: string;
     record?: string;
     screenshot?: string;
+    timeout?: number;
   }>();
 
   try {
     const input = await resolveVitexecCodeInputDetails(codeParts);
-    const logs = await runVitexec(input.code, {
+    process.stdout.write("logs:\n");
+    let hasLogs = false;
+    for await (const line of runVitexec(input.code, {
       configFile: options.config,
       gpu: options.gpu,
       moduleExtension: input.moduleExtension,
       path: options.path,
       recordPath: options.record,
-      screenshotPath: options.screenshot
-    });
-    console.log(formatCliOutput(logs));
+      screenshotPath: options.screenshot,
+      timeoutMs: options.timeout === undefined ? undefined : options.timeout * 1000
+    })) {
+      hasLogs = true;
+      process.stdout.write(`${line}\n`);
+    }
+    if (!hasLogs) process.stdout.write("(no browser logs captured)\n");
   } catch (error) {
     console.error(`vitexec failed: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   }
 }
 
-function formatCliOutput(logs: string): string {
-  return `logs:\n${logs || "(no browser logs captured)"}`;
+function parseTimeoutSeconds(value: string): number {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new InvalidArgumentError("timeout must be a positive number of seconds");
+  }
+
+  return seconds;
 }
 
 function isEntrypoint(): boolean {

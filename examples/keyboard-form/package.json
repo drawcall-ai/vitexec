@@ -7,7 +7,7 @@
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "vitexec:keyboard": "vitexec ./vitexec/fill-form.ts"
+    "vitexec": "vitexec ./vitexec/fill-form.ts"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

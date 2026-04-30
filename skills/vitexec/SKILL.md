@@ -19,7 +19,7 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 
 1. Identify the page path if it is not `/`.
 2. Write the smallest snippet that performs the user-like action or reads the browser-only state.
-3. Run `vitexec '<snippet>'`, adding `--path`, `--gpu`, `--screenshot`, `--record`, or `--config` only when needed.
+3. Run `vitexec '<snippet>'`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--timeout`, or `--config` only when needed.
 4. Treat stdout as browser logs. It starts with `logs:`.
 
 ```sh
@@ -41,6 +41,8 @@ vitexec --path /cart '
 
 - Prefer importing exported app state over scraping DOM when state is available.
 - Use direct state reads for observation and assertions, not to bypass user interaction.
+- Use live progress logs and focused assertions to early-exit on failures and see current progress.
+- Keep logs concise; overly verbose logs become unreadable and unnecessarily fill the context.
 - Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.
 - Use `--gpu` for WebGL, canvas, Three.js, and WebXR behavior.
 - Use screenshots or recordings only when visual evidence matters.

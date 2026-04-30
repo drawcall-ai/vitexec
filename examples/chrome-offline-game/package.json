@@ -6,10 +6,12 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "vitexec": "vitexec --record ../../artifacts/chrome-offline-gameplay-1min-showcase.webm ./vitexec/one-minute-showcase.js"
   },
   "devDependencies": {
     "typescript": "^5.8.3",
+    "vitexec": "workspace:*",
     "vite": "^8.0.10"
   }
 }

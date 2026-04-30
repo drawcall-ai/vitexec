@@ -5,6 +5,7 @@
   "packageManager": "pnpm@10.9.0",
   "scripts": {
     "build": "pnpm -r build",
+    "showcase:chrome-offline-game": "pnpm --filter chrome-offline-game vitexec:showcase",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
   },

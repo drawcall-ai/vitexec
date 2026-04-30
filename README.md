@@ -83,13 +83,16 @@ Use a non-standard Vite config location:
 vitexec --config ./apps/web/vite.config.ts --path /cart 'console.log("ready")'
 ```
 
+Set a shorter timeout:
+
+```sh
+vitexec --timeout 30 'console.log("ready")'
+```
+
 The skill explains when to use `vitexec`, how to install it if missing, and how to write focused snippets that return useful logs.
 
 
 
 ## TODO
-
-[ ] write down the "vitexec" scripts for the examples (maybe even support vitexec <path>?)
 [ ] support sth. like import { pause, resume, advance } from "vitexec/request-animation-frame" (maybe even also support override perfomance.now?)
 [ ] make sure the raf pausing etc also works for WebXR
-[ ] add more examples for vitexec with using mouse click, mouse turning for captured mouse (e.g. w. pmndrs/viverse), keybord input, gamepad (and maybe more)

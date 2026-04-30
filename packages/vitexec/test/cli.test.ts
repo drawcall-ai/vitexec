@@ -22,13 +22,25 @@ afterEach(async () => {
   currentTempDir = undefined;
 });
 
+async function collectVitexec(
+  code: string,
+  options: Parameters<typeof runVitexec>[1] = {}
+): Promise<string> {
+  const logs: string[] = [];
+  for await (const line of runVitexec(code, options)) {
+    logs.push(line);
+  }
+
+  return logs.join("\n");
+}
+
 describe("vitexec CLI runner", () => {
   it("returns browser logs for injected code", async () => {
     currentProject = await createTempViteProject({
       "index.html": "<main>ready</main>"
     });
 
-    const output = await runVitexec("console.log('loaded')", {
+    const output = await collectVitexec("console.log('loaded')", {
       configFile: false,
       root: currentProject.root
     });
@@ -82,7 +94,7 @@ describe("vitexec CLI runner", () => {
       currentProject.root
     );
 
-    const output = await runVitexec(code, {
+    const output = await collectVitexec(code, {
       configFile: false,
       root: currentProject.root
     });
@@ -100,7 +112,7 @@ describe("vitexec CLI runner", () => {
       currentProject.root
     );
 
-    const output = await runVitexec(input.code, {
+    const output = await collectVitexec(input.code, {
       configFile: false,
       moduleExtension: input.moduleExtension,
       root: currentProject.root
@@ -114,12 +126,113 @@ describe("vitexec CLI runner", () => {
       "index.html": "<main>ready</main>"
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "throw new Error('injected failure')",
       { configFile: false, root: currentProject.root }
     );
 
     expect(output).toContain("injected failure");
+  });
+
+  it("captures non-Error values thrown from injected code", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        throw "plain string failure";
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain("[error] plain string failure");
+    expect(output).not.toContain("[error] timeout");
+  });
+
+  it("captures object values thrown from injected code", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        throw { kind: "object failure", code: 42 };
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain('[error] {"kind":"object failure","code":42}');
+    expect(output).not.toContain("[error] timeout");
+  });
+
+  it("captures rejected promises from injected code", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        await Promise.reject(new TypeError("async injected rejection"));
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain("async injected rejection");
+    expect(output).not.toContain("[error] timeout");
+  });
+
+  it("reports malformed injected code without timing out", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        const =
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain("[error] Unexpected token '='");
+    expect(output).not.toContain("[error] timeout");
+  });
+
+  it("reports failed static imports from injected code without timing out", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        import "/missing-vitexec-module.js";
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain("[http 500] GET");
+    expect(output).toContain("/__vitexec/code/");
+    expect(output).toContain("Failed to fetch dynamically imported module");
+    expect(output).not.toContain("[error] timeout");
+  });
+
+  it("captures async page errors scheduled by injected code", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        setTimeout(() => {
+          throw new Error("scheduled injected failure");
+        }, 0);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain("[page error] scheduled injected failure");
+    expect(output).not.toContain("[error] timeout");
   });
 
   it("stops waiting immediately when injected code throws and returns the error logs", async () => {
@@ -128,7 +241,7 @@ describe("vitexec CLI runner", () => {
     });
 
     const startedAt = performance.now();
-    const output = await runVitexec(
+    const output = await collectVitexec(
       `
         throw new Error("stop-on-error");
         await new Promise((resolve) => setTimeout(resolve, 10_000));
@@ -147,7 +260,7 @@ describe("vitexec CLI runner", () => {
       "index.html": "<main>ready</main>"
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "await new Promise((resolve) => setTimeout(resolve, 150)); console.log('async done')",
       { configFile: false, root: currentProject.root }
     );
@@ -155,12 +268,180 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] async done");
   });
 
+  it("keeps waiting when the page navigates while injected code is running", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": `
+        <script>
+          if (!sessionStorage.vitexecReloaded) {
+            sessionStorage.vitexecReloaded = "yes";
+            setTimeout(() => location.reload(), 0);
+          }
+        </script>
+        <main>ready</main>
+      `
+    });
+
+    const output = await collectVitexec(
+      `
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        console.log("after navigation", sessionStorage.vitexecReloaded);
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain("[log] after navigation yes");
+  });
+
+  it("reports external navigations and continues in the new page", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        if (!sessionStorage.vitexecReloadedDuringRun) {
+          sessionStorage.vitexecReloadedDuringRun = "yes";
+          console.log("before external reload");
+          location.reload();
+          await new Promise(() => {});
+        }
+
+        console.log("after external reload", document.querySelector("main")?.textContent);
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain("[log] before external reload");
+    expect(output).toContain("[navigation] navigated");
+    expect(output).toContain("[log] after external reload ready");
+  });
+
+  it("does not hot reload changed app files while injected code is running", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": `
+        <main>loading</main>
+        <script type="module" src="/src/main.js"></script>
+      `,
+      "src/main.js": `
+        import { message } from "./message.js";
+
+        const main = document.querySelector("main");
+        main.textContent = message;
+
+        if (import.meta.hot) {
+          import.meta.hot.accept("./message.js", (module) => {
+            main.textContent = module.message;
+            console.log("hmr update", module.message);
+          });
+        }
+      `,
+      "src/message.js": `export const message = "initial";`
+    });
+
+    const logs = runVitexec(
+      `
+        while (document.querySelector("main")?.textContent !== "initial") {
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
+        console.log("first", document.querySelector("main")?.textContent);
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        console.log("last", document.querySelector("main")?.textContent);
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    const output: string[] = [];
+    let updatedFile = false;
+    for await (const line of logs) {
+      output.push(line);
+      if (!updatedFile && line === "[log] first initial") {
+        updatedFile = true;
+        await writeFile(
+          join(currentProject.root, "src", "message.js"),
+          `export const message = "changed";`,
+          "utf8"
+        );
+      }
+    }
+
+    const text = output.join("\n");
+    expect(updatedFile).toBe(true);
+    expect(text).toContain("[log] first initial");
+    expect(text).toContain("[log] last initial");
+    expect(text).not.toContain("hmr update");
+    expect(text).not.toContain("changed");
+  });
+
+  it("formats console values that JSON cannot represent", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec("console.log(undefined, null)", {
+      configFile: false,
+      root: currentProject.root
+    });
+
+    expect(output).toContain("[log] undefined null");
+  });
+
+  it("yields browser logs before injected code finishes", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const startedAt = performance.now();
+    const logs = runVitexec(
+      `
+        console.log("first");
+        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        console.log("second");
+      `,
+      { configFile: false, root: currentProject.root, timeoutMs: 5_000 }
+    );
+
+    while (true) {
+      const result = await logs.next();
+      expect(result.done).toBe(false);
+      if (result.value === "[log] first") break;
+    }
+
+    expect(performance.now() - startedAt).toBeLessThan(800);
+
+    const remainingLogs: string[] = [];
+    for await (const line of logs) {
+      remainingLogs.push(line);
+    }
+
+    expect(remainingLogs).toContain("[log] second");
+  });
+
+  it("stops the browser run when the log stream is closed early", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const startedAt = performance.now();
+    for await (const line of runVitexec(
+      `
+        console.log("first");
+        await new Promise((resolve) => setTimeout(resolve, 10_000));
+      `,
+      { configFile: false, root: currentProject.root, timeoutMs: 10_000 }
+    )) {
+      expect(line).toBe("[log] first");
+      break;
+    }
+
+    expect(performance.now() - startedAt).toBeLessThan(3_000);
+  });
+
   it("can run a richer imported TypeScript assertion against an example", async () => {
     const root = fileURLToPath(
       new URL("../../../examples/chrome-offline-game/", import.meta.url)
     );
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       `
         import { OfflineRunnerGame } from "/src/game.ts";
 
@@ -199,7 +480,7 @@ describe("vitexec CLI runner", () => {
       `
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       `
         import { message } from "@app/message.js";
         console.log(message);
@@ -231,7 +512,7 @@ describe("vitexec CLI runner", () => {
       `
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "console.log(document.querySelector('main')?.textContent)",
       { root: currentProject.root }
     );
@@ -251,7 +532,7 @@ describe("vitexec CLI runner", () => {
       `
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "console.log(document.querySelector('main')?.textContent)",
       { root: currentProject.root }
     );
@@ -279,7 +560,7 @@ describe("vitexec CLI runner", () => {
       `
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       `
         import { message } from "#src/message.js";
         console.log(message);
@@ -299,7 +580,7 @@ describe("vitexec CLI runner", () => {
       "cart/index.html": "<main id=\"route\">cart</main>"
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "console.log(document.querySelector('#route')?.textContent)",
       { configFile: false, path: "cart/", root: currentProject.root }
     );
@@ -314,7 +595,7 @@ describe("vitexec CLI runner", () => {
     currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-shot-"));
     const screenshotPath = join(currentTempDir, "nested", "page.png");
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "document.body.style.background = 'rgb(255, 0, 0)'",
       { configFile: false, root: currentProject.root, screenshotPath }
     );
@@ -330,7 +611,7 @@ describe("vitexec CLI runner", () => {
     currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-record-"));
     const recordPath = join(currentTempDir, "nested", "page.webm");
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "document.body.textContent = 'recorded'; await new Promise((resolve) => setTimeout(resolve, 50))",
       { configFile: false, root: currentProject.root, recordPath }
     );
@@ -344,7 +625,7 @@ describe("vitexec CLI runner", () => {
       "index.html": "<main>ready</main>"
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "console.log('gpu mode')",
       { configFile: false, root: currentProject.root, gpu: true }
     );
@@ -357,7 +638,7 @@ describe("vitexec CLI runner", () => {
       "index.html": "<main>ready</main>"
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "await fetch('/__vitexec/code/missing'); console.log('ready')",
       { configFile: false, root: currentProject.root }
     );
@@ -374,7 +655,7 @@ describe("vitexec CLI runner", () => {
       "index.html": "<main>ready</main>"
     });
 
-    const output = await runVitexec(
+    const output = await collectVitexec(
       "console.log('too slow')",
       { configFile: false, root: currentProject.root, timeoutMs: 1 }
     );

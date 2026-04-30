@@ -6,7 +6,8 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "vitexec": "vitexec --gpu --record ../../artifacts/xr-precision-throw-controller-gameplay.webm ./vitexec/controller-throw.js"
   },
   "dependencies": {
     "@react-three/fiber": "^9.6.1",
@@ -23,6 +24,7 @@
     "@types/three": "^0.176.0",
     "iwer": "^2.2.1",
     "typescript": "^5.9.3",
+    "vitexec": "workspace:*",
     "vite": "^8.0.10"
   }
 }

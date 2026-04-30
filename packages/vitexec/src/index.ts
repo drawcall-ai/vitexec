@@ -4,10 +4,12 @@ import { normalizePath, type Plugin } from "vite";
 const VITEXEC_CODE_ROUTE = "/__vitexec/code";
 const VITEXEC_MODULE_DIR = "/.vitexec/code";
 
+export type VitexecModuleExtension = ".js" | ".jsx" | ".mjs" | ".mts" | ".ts" | ".tsx";
+
 export type VitexecPluginOptions = {
   code: string;
   id: string;
-  moduleExtension?: string;
+  moduleExtension?: VitexecModuleExtension;
 };
 
 function decodeId(value: string): string | undefined {
@@ -43,15 +45,19 @@ function baseUrl(base: string): URL {
   return new URL(pathname, "http://vitexec.local");
 }
 
-function virtualModuleId(id: string, extension: string): string {
+function virtualModuleId(id: string, extension: VitexecModuleExtension): string {
   return `${VITEXEC_MODULE_DIR}/${encodeURIComponent(id)}${extension}`;
 }
 
-function resolvedModuleId(root: string, id: string, extension: string): string {
+function resolvedModuleId(root: string, id: string, extension: VitexecModuleExtension): string {
   return normalizePath(posix.join(normalizePath(root), virtualModuleId(id, extension)));
 }
 
-function idFromResolvedModuleId(root: string, id: string, extension: string): string | undefined {
+function idFromResolvedModuleId(
+  root: string,
+  id: string,
+  extension: VitexecModuleExtension
+): string | undefined {
   const prefix = `${normalizePath(root)}${VITEXEC_MODULE_DIR}/`;
   if (!id.startsWith(prefix) || !id.endsWith(extension)) return undefined;
 
@@ -62,7 +68,9 @@ function idFromResolvedModuleId(root: string, id: string, extension: string): st
 function runtimeScript(id: string, base: string): string {
   return `
 globalThis.__vitexecRuns ??= {};
-globalThis.__vitexecRuns[${JSON.stringify(id)}] = import(${JSON.stringify(codeRouteForBase(base))} + "/" + ${JSON.stringify(encodeURIComponent(id))}).catch(console.error);
+globalThis.__vitexecRuns[${JSON.stringify(id)}] = import(${JSON.stringify(codeRouteForBase(base))} + "/" + ${JSON.stringify(encodeURIComponent(id))})
+  .catch(console.error)
+  .finally(() => globalThis.__vitexecReport?.());
 `;
 }
 
