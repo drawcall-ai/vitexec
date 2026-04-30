@@ -1,124 +1,47 @@
 ---
 name: vitexec
-description: Use this skill when an AI agent needs to inspect, verify, or debug a live Vite app by running a temporary snippet inside the browser page and reading the returned browser logs. Especially useful for checking client state after interactions, imported app modules, canvas/WebGL/Three.js state, screenshots, and runtime-only behavior without editing app files.
+description: Use this skill when an AI agent needs to inspect, verify, or debug a live Vite app by running temporary snippets inside the browser page and reading browser logs. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, WebXR/Three.js XR with IWER, and runtime-only behavior without editing app files.
 ---
 
 # vitexec
 
-Use `vitexec` when the truth you need lives inside a running Vite page: client stores, app modules, DOM state, canvas/WebGL state, or browser-only errors.
+Use `vitexec` when the truth lives in the running browser: client state, imported app modules, DOM, canvas/WebGL, screenshots, recordings, or browser-only errors.
 
-Do not use it for static checks that can be answered from files, unit tests, or TypeScript alone.
+Do not use it for questions static files, unit tests, or TypeScript can answer directly.
 
-## Install If Missing
+## References
 
-First check whether the project already has `vitexec`:
-
-```sh
-pnpm why vitexec
-```
-
-If missing, install it with Playwright:
-
-```sh
-pnpm add -D vitexec playwright
-pnpm exec playwright install chromium
-```
+- If `vitexec` or Playwright is missing, read [references/install.md](references/install.md).
+- For mouse, keyboard, pointer lock, gamepad, or other input, read [references/inputs.md](references/inputs.md).
+- For WebXR, read [references/webxr.md](references/webxr.md).
 
 ## Workflow
 
 1. Identify the page path if it is not `/`.
-2. Write a small snippet that imports app modules or reads browser state.
-3. Run `vitexec '<snippet>'`, or add `--path <path>` for a route.
-4. Add `--config <path>` only when Vite config is not in the default location.
-5. Treat stdout as browser logs. It starts with `logs:`.
-
-Example:
+2. Write the smallest snippet that performs the user-like action or reads the browser-only state.
+3. Run `vitexec '<snippet>'`, adding `--path`, `--gpu`, `--screenshot`, `--record`, or `--config` only when needed.
+4. Treat stdout as browser logs. It starts with `logs:`.
 
 ```sh
 vitexec 'console.log("ready")'
 ```
 
-Expected shape:
-
-```txt
-logs:
-[log] ready
-```
-
-## Common Patterns
-
-Read client state after interaction:
+For structured state, log JSON:
 
 ```sh
 vitexec --path /cart '
   import { useCartStore } from "/src/store/cart.ts";
-
   document.querySelector("[data-testid=add-to-cart]")?.click();
   await new Promise((resolve) => requestAnimationFrame(resolve));
-
-  console.log("cart", JSON.stringify(useCartStore.getState().items));
+  console.log("cart", JSON.stringify(useCartStore.getState()));
 '
 ```
 
-Inspect imported app objects:
+## Guidance
 
-```sh
-vitexec '
-  import { camera, cube, Vector3 } from "/src/scene-state.ts";
-  const p = cube.getWorldPosition(new Vector3()).applyMatrix4(camera.matrixWorldInverse);
-  console.log("front-left", p.z < 0 && p.x < 0);
-'
-```
-
-Capture a screenshot:
-
-```sh
-vitexec --screenshot ./artifacts/page.png 'console.log("captured")'
-```
-
-Record a video:
-
-```sh
-vitexec --record ./artifacts/page.webm 'console.log("recorded")'
-```
-
-Use GPU mode for canvas/WebGL/Three.js checks:
-
-```sh
-vitexec --gpu 'console.log(Boolean(document.createElement("canvas").getContext("webgl")))'
-```
-
-Use a custom Vite config location:
-
-```sh
-vitexec --config ./apps/web/vite.config.ts --path /dashboard 'console.log("ready")'
-```
-
-## Interpreting Output
-
-Useful lines:
-
-```txt
-[log] ...
-[warning] ...
-[page error] ...
-[http 404] GET ... Not Found
-[screenshot] ./path.png
-[recording] ./path.webm
-```
-
-If output is empty, the snippet may not have logged anything, the page may not have loaded, or the wrong path was used.
-
-If imports fail, prefer browser-root app paths such as `/src/store.ts`, not local filesystem paths.
-
-## Guidance For Agents
-
-- Keep snippets short and focused on one question.
-- Prefer importing app modules over scraping DOM when state is exported.
-- Log JSON for structured data: `console.log("state", JSON.stringify(value))`.
-- Use `--path <path>` when the state lives on a route other than `/`.
-- Use `--config <path>` when the project has a non-standard Vite config location.
-- Use `--gpu` for WebGL/canvas/Three.js behavior.
-- Use `--screenshot <path>` when visual state matters.
-- Use `--record <path>` when an interaction sequence matters.
+- Prefer importing exported app state over scraping DOM when state is available.
+- Use direct state reads for observation and assertions, not to bypass user interaction.
+- Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.
+- Use `--gpu` for WebGL, canvas, Three.js, and WebXR behavior.
+- Use screenshots or recordings only when visual evidence matters.
 - Do not leave temporary code in the app when `vitexec` can inspect it from outside.
