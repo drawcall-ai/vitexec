@@ -1,6 +1,6 @@
 ---
 name: vitexec
-description: Use this skill when an AI agent needs to inspect, verify, or debug a live Vite app by running temporary snippets inside the browser page and reading browser logs. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, WebXR/Three.js XR with IWER, and runtime-only behavior without editing app files.
+description: Use this skill when an AI agent needs to inspect, verify, debug, or profile a live Vite app by running temporary snippets inside the browser page and reading browser logs or captured artifacts. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, CPU/network/performance/heap analysis, WebXR/Three.js XR with IWER, and runtime-only behavior without editing app files.
 ---
 
 # vitexec
@@ -13,13 +13,14 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 
 - If `vitexec` or Playwright is missing, read [references/install.md](references/install.md).
 - For mouse, keyboard, pointer lock, gamepad, or other input, read [references/inputs.md](references/inputs.md).
+- For CPU, network, performance timeline, or heap analysis, read [references/performance.md](references/performance.md).
 - For WebXR, read [references/webxr.md](references/webxr.md).
 
 ## Workflow
 
 1. Identify the page path if it is not `/`.
 2. Write the smallest snippet that performs the user-like action or reads the browser-only state.
-3. Run `vitexec '<snippet>'`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--timeout`, or `--config` only when needed.
+3. Run `vitexec '<snippet>'`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--cpu-profile`, `--network-trace`, `--performance-trace`, `--heap-snapshot`, `--timeout`, or `--config` only when needed.
 4. Treat stdout as browser logs. It starts with `logs:`.
 
 ```sh

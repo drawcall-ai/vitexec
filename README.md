@@ -47,51 +47,26 @@ No temporary test page. No debug panel. No guessing from the DOM.
 
 ## Commands
 
-Run a snippet:
-
-```sh
-vitexec 'console.log("ready")'
-```
-
-Capture the page:
-
 ```sh
 vitexec --path /cart --screenshot ./artifacts/cart.png '
-  console.log("captured");
+  console.log("ready");
 '
 ```
 
-Record a browser video:
+| Option | Use |
+|---|---|
+| `--path /cart` | Open a specific route |
+| `--config ./vite.config.ts` | Use a specific Vite config |
+| `--timeout 30` | Set the maximum wait time |
+| `--gpu` | Use GPU-friendly Chromium flags |
+| `--screenshot ./page.png` | Capture a full-page screenshot |
+| `--record ./run.webm` | Record browser video |
+| `--cpu-profile ./cpu.cpuprofile` | Capture a Chrome/V8 CPU profile |
+| `--network-trace ./network.har` | Capture network requests as HAR |
+| `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
+| `--heap-snapshot ./heap.json` | Capture a jq-friendly decoded heap snapshot |
 
-```sh
-vitexec --record ./artifacts/gameplay.webm '
-  console.log("recorded");
-'
-```
-
-Use GPU mode for canvas-heavy checks:
-
-```sh
-vitexec --gpu '
-  console.log("webgl", Boolean(document.createElement("canvas").getContext("webgl")));
-'
-```
-
-Use a non-standard Vite config location:
-
-```sh
-vitexec --config ./apps/web/vite.config.ts --path /cart 'console.log("ready")'
-```
-
-Set a shorter timeout:
-
-```sh
-vitexec --timeout 30 'console.log("ready")'
-```
-
-The skill explains when to use `vitexec`, how to install it if missing, and how to write focused snippets that return useful logs.
-
-
+The skill explains when to use `vitexec`, how to install it if missing, and how to write focused snippets that return useful logs and performance artifacts.
 
 ## TODO
 [ ] support sth. like import { pause, resume, advance } from "vitexec/request-animation-frame" (maybe even also support override perfomance.now?)

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +32,10 @@ async function collectVitexec(
   }
 
   return logs.join("\n");
+}
+
+async function readJson(path: string): Promise<unknown> {
+  return JSON.parse(await readFile(path, "utf8"));
 }
 
 describe("vitexec CLI runner", () => {
@@ -620,6 +624,110 @@ describe("vitexec CLI runner", () => {
     expect((await stat(recordPath)).size).toBeGreaterThan(0);
   });
 
+  it("can capture a CPU profile for JavaScript hotspot analysis", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+    currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-cpu-"));
+    const cpuProfilePath = join(currentTempDir, "nested", "cpu.cpuprofile");
+
+    const output = await collectVitexec(
+      `
+        function vitexecCpuHotspot() {
+          const end = performance.now() + 250;
+          let total = 0;
+          while (performance.now() < end) total += Math.sqrt(total + 1);
+          return total;
+        }
+
+        console.log("cpu result", vitexecCpuHotspot() > 0);
+      `,
+      { configFile: false, root: currentProject.root, cpuProfilePath }
+    );
+
+    const profile = readCpuProfile(await readJson(cpuProfilePath));
+    expect(output).toContain(`[cpu-profile] ${cpuProfilePath}`);
+    expect(profile.nodes.length).toBeGreaterThan(0);
+    expect(profile.nodes.some((node) => node.callFrame.functionName === "vitexecCpuHotspot")).toBe(true);
+  });
+
+  it("can capture a HAR network trace for failed request analysis", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+    currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-network-"));
+    const networkTracePath = join(currentTempDir, "nested", "network.har");
+
+    const output = await collectVitexec(
+      `
+        const response = await fetch("/__vitexec/code/missing-network-trace");
+        console.log("network status", response.status);
+      `,
+      { configFile: false, root: currentProject.root, networkTracePath }
+    );
+
+    const har = readHar(await readJson(networkTracePath));
+    expect(output).toContain(`[network-trace] ${networkTracePath}`);
+    expect(har.log.entries.some((entry) => {
+      return entry.request.url.includes("/__vitexec/code/missing-network-trace") && entry.response.status === 404;
+    })).toBe(true);
+  });
+
+  it("can capture a Chrome performance trace for long task analysis", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+    currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-performance-"));
+    const performanceTracePath = join(currentTempDir, "nested", "performance.trace.json");
+
+    const output = await collectVitexec(
+      `
+        const end = performance.now() + 120;
+        while (performance.now() < end) {}
+        console.log("blocked main thread");
+      `,
+      { configFile: false, root: currentProject.root, performanceTracePath }
+    );
+
+    const trace = readPerformanceTrace(await readJson(performanceTracePath));
+    expect(output).toContain(`[performance-trace] ${performanceTracePath}`);
+    expect(trace.traceEvents.length).toBeGreaterThan(0);
+    expect(trace.traceEvents.some((event) => event.name === "RunTask" || event.name === "FunctionCall")).toBe(true);
+  });
+
+  it("can capture an agent-friendly heap summary for memory leak analysis", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+    currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-heap-"));
+    const heapSnapshotPath = join(currentTempDir, "nested", "heap.json");
+
+    const output = await collectVitexec(
+      `
+        class VitexecLeakyWidget {
+          constructor(index) {
+            this.index = index;
+            this.payload = "x".repeat(10_000);
+          }
+        }
+
+        globalThis.__vitexecLeakyWidgets = Array.from(
+          { length: 250 },
+          (_, index) => new VitexecLeakyWidget(index)
+        );
+        console.log("leaks", globalThis.__vitexecLeakyWidgets.length);
+      `,
+      { configFile: false, root: currentProject.root, heapSnapshotPath }
+    );
+
+    const heap = readHeapSnapshot(await readJson(heapSnapshotPath));
+    expect(output).toContain(`[heap-snapshot] ${heapSnapshotPath}`);
+    expect(heap.schemaVersion).toBe(1);
+    expect(heap.nodes.some((node) => node.name === "VitexecLeakyWidget")).toBe(true);
+    expect(heap.edges.some((edge) => edge.name === "payload")).toBe(true);
+    expect(heap.summary.topConstructorsByCount.some((entry) => entry.name === "VitexecLeakyWidget")).toBe(true);
+  });
+
   it("can launch with gpu-friendly new headless mode", async () => {
     currentProject = await createTempViteProject({
       "index.html": "<main>ready</main>"
@@ -663,6 +771,61 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[error] timeout after 1ms");
   });
 });
+
+type CpuProfile = {
+  nodes: Array<{ callFrame: { functionName: string } }>;
+};
+
+function readCpuProfile(value: unknown): CpuProfile {
+  expect(value).toEqual(expect.objectContaining({ nodes: expect.any(Array) }));
+  return value as CpuProfile;
+}
+
+type Har = {
+  log: {
+    entries: Array<{
+      request: { url: string };
+      response: { status: number };
+    }>;
+  };
+};
+
+function readHar(value: unknown): Har {
+  expect(value).toEqual(expect.objectContaining({
+    log: expect.objectContaining({ entries: expect.any(Array) })
+  }));
+  return value as Har;
+}
+
+type PerformanceTrace = {
+  traceEvents: Array<{ name?: string }>;
+};
+
+function readPerformanceTrace(value: unknown): PerformanceTrace {
+  expect(value).toEqual(expect.objectContaining({ traceEvents: expect.any(Array) }));
+  return value as PerformanceTrace;
+}
+
+type HeapSnapshot = {
+  schemaVersion: 1;
+  nodes: Array<{ name: string }>;
+  edges: Array<{ name: string }>;
+  summary: {
+    topConstructorsByCount: Array<{ name: string }>;
+  };
+};
+
+function readHeapSnapshot(value: unknown): HeapSnapshot {
+  expect(value).toEqual(expect.objectContaining({
+    schemaVersion: 1,
+    nodes: expect.any(Array),
+    edges: expect.any(Array),
+    summary: expect.objectContaining({
+      topConstructorsByCount: expect.any(Array)
+    })
+  }));
+  return value as HeapSnapshot;
+}
 
 const LOCALHOST_KEY = `-----BEGIN PRIVATE KEY-----
 MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCwhlLdX3a7cqgF
