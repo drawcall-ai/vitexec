@@ -537,12 +537,35 @@ describe("vitexec CLI runner", () => {
     });
 
     const output = await collectVitexec(
-      "console.log(document.querySelector('main')?.textContent)",
+      "console.log(location.pathname, document.querySelector('main')?.textContent)",
       { root: currentProject.root }
     );
 
-    expect(output).toContain("[log] base");
+    expect(output).toContain("[log] /xr/examples/minecraft/ base");
     expect(output).not.toContain("[http 404]");
+  });
+
+  it("serves from an explicit config file directory when no root is set", async () => {
+    currentProject = await createTempViteProject({
+      "examples/performance/index.html": "<main>performance</main>",
+      "examples/performance/vite.config.ts": `
+        export default {
+          base: "/uikit/examples/performance/"
+        };
+      `
+    });
+
+    const output = await collectVitexec(
+      "console.log(location.pathname, document.querySelector('main')?.textContent)",
+      {
+        configFile: join(currentProject.root, "examples", "performance", "vite.config.ts"),
+        timeoutMs: 1_000
+      }
+    );
+
+    expect(output).toContain("[log] /uikit/examples/performance/ performance");
+    expect(output).not.toContain("[http 404]");
+    expect(output).not.toContain("[error] timeout");
   });
 
   it("can load an explicit Vite config file", async () => {

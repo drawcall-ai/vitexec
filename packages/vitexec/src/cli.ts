@@ -16,7 +16,7 @@ import {
   type Request,
   type Response
 } from "playwright";
-import { createServer, type ViteDevServer } from "vite";
+import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
 
 declare global {
@@ -261,9 +261,10 @@ async function startViteServer(
   code: string,
   options: RunVitexecOptions
 ): Promise<ViteDevServer> {
+  const root = await resolveViteRootOption(options);
   const server = await createServer({
     configFile: options.configFile,
-    root: options.root,
+    root,
     logLevel: "silent",
     server: {
       hmr: false,
@@ -280,16 +281,34 @@ async function startViteServer(
   return server;
 }
 
-function buildServerPageUrl(server: ViteDevServer, path = "/"): string {
+async function resolveViteRootOption(options: RunVitexecOptions): Promise<string | undefined> {
+  if (options.root || !options.configFile) return options.root;
+  const configFile = resolve(options.configFile);
+  const configRoot = dirname(configFile);
+  const loadedConfig = await loadConfigFromFile(
+    { command: "serve", mode: "development", isSsrBuild: false, isPreview: false },
+    configFile,
+    configRoot,
+    "silent"
+  );
+  if (loadedConfig?.config.root !== undefined) return undefined;
+
+  return configRoot;
+}
+
+function buildServerPageUrl(server: ViteDevServer, path?: string): string {
   const base = server.resolvedUrls?.local[0];
-  if (base) return new URL(normalizePagePath(path), base).toString();
+  if (base) {
+    return path === undefined ? base : new URL(normalizePagePath(path), base).toString();
+  }
 
   const address = server.httpServer?.address();
   if (!address || typeof address === "string") {
     throw new Error("Failed to start Vite server.");
   }
 
-  return new URL(normalizePagePath(path), `http://127.0.0.1:${address.port}/`).toString();
+  const url = `http://127.0.0.1:${address.port}/`;
+  return new URL(path === undefined ? server.config.base : normalizePagePath(path), url).toString();
 }
 
 function normalizePagePath(path: string): string {
@@ -728,7 +747,7 @@ async function main(): Promise<void> {
     .option("--gpu", "use Chromium's new headless mode with GPU-friendly flags")
     .option("--heap-snapshot <path>", "write an agent-friendly heap snapshot summary after the code runs")
     .option("--network-trace <path>", "write a HAR network trace after the code runs")
-    .option("--path <path>", "Vite page path to open", "/")
+    .option("--path <path>", "Vite page path to open")
     .option("--performance-trace <path>", "write a Chrome performance trace after the code runs")
     .option("--record <path>", "write a WebM video recording after the code runs")
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
