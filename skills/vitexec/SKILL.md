@@ -11,7 +11,6 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 
 ## References
 
-- If `vitexec` or Playwright is missing, read [references/install.md](references/install.md).
 - For mouse, keyboard, pointer lock, gamepad, or other input, read [references/inputs.md](references/inputs.md).
 - For CPU, network, performance timeline, or heap analysis, read [references/performance.md](references/performance.md).
 - For WebXR, read [references/webxr.md](references/webxr.md).
@@ -22,6 +21,8 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 2. Write the smallest snippet that performs the user-like action or reads the browser-only state.
 3. Run `vitexec '<snippet>'`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--cpu-profile`, `--network-trace`, `--performance-trace`, `--heap-snapshot`, `--timeout`, or `--config` only when needed.
 4. Treat stdout as browser logs. It starts with `logs:`.
+
+If `vitexec` itself is missing, install `vitexec` with the package manager already used by the project.
 
 ```sh
 vitexec 'console.log("ready")'

@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
+import spawn from "nano-spawn";
 import {
   chromium,
   type Browser,
@@ -160,7 +161,7 @@ async function runVitexecInServerTask(
     pendingLog.finally(() => pendingConsoleLogs.delete(pendingLog));
   };
   try {
-    browser = await launchBrowser(options);
+    browser = await launchBrowser(options, log);
     signal.addEventListener("abort", closeBrowser, { once: true });
     if (signal.aborted) return;
 
@@ -315,11 +316,71 @@ function normalizePagePath(path: string): string {
   return path.startsWith("/") ? path : `/${path}`;
 }
 
-function launchBrowser(options: RunVitexecOptions): Promise<Browser> {
+async function launchBrowser(
+  options: RunVitexecOptions,
+  log: (line: string) => void
+): Promise<Browser> {
+  await ensureChromiumInstalled({ log });
+
   return chromium.launch({
-    channel: options.gpu ? "chromium" : undefined,
+    channel: "chromium",
     args: options.gpu ? ["--enable-gpu", "--ignore-gpu-blocklist"] : undefined
   });
+}
+
+type EnsureChromiumInstalledOptions = {
+  executablePath?: () => string;
+  fileExists?: (path: string) => Promise<boolean>;
+  install?: () => Promise<void>;
+  log?: (line: string) => void;
+};
+
+export async function ensureChromiumInstalled(
+  options: EnsureChromiumInstalledOptions = {}
+): Promise<void> {
+  const executablePath = options.executablePath ?? (() => chromium.executablePath());
+  const fileExists = options.fileExists ?? pathExists;
+  const install = options.install ?? installPlaywrightChromium;
+
+  if (await fileExists(executablePath())) return;
+
+  options.log?.("[playwright] installing Chromium browser...");
+  await install();
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (isFileMissingError(error)) return false;
+    throw error;
+  }
+}
+
+async function installPlaywrightChromium(): Promise<void> {
+  try {
+    await spawn("playwright", ["install", "chromium"], {
+      cwd: packageRoot(),
+      preferLocal: true,
+      stdin: "ignore"
+    });
+  } catch (error) {
+    const details = outputFromSubprocessError(error);
+    const suffix = details ? `\n${details}` : "";
+    throw new Error(`Playwright failed to install Chromium.${suffix}`);
+  }
+}
+
+function packageRoot(): string {
+  return resolve(dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+function outputFromSubprocessError(error: unknown): string {
+  if (typeof error !== "object" || error === null || !("output" in error)) return "";
+
+  const output = error.output;
+  return typeof output === "string" ? output.trim() : "";
 }
 
 async function ensureParentDir(path: string): Promise<void> {

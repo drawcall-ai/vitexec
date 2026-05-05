@@ -26,6 +26,7 @@
   },
   "dependencies": {
     "commander": "^14.0.3",
+    "nano-spawn": "^2.1.0",
     "playwright": "^1.52.0"
   },
   "devDependencies": {

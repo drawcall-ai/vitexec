@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
 import {
+  ensureChromiumInstalled,
   resolveVitexecCodeInputDetails,
   resolveVitexecCodeInput,
   runVitexec,
@@ -50,6 +51,37 @@ describe("vitexec CLI runner", () => {
     });
 
     expect(output).toContain("[log] loaded");
+  });
+
+  it("installs Chromium when the Playwright executable is missing", async () => {
+    const logs: string[] = [];
+    let installCount = 0;
+
+    await ensureChromiumInstalled({
+      executablePath: () => "/missing/chromium",
+      fileExists: async () => false,
+      install: async () => {
+        installCount += 1;
+      },
+      log: (line) => logs.push(line)
+    });
+
+    expect(installCount).toBe(1);
+    expect(logs).toEqual(["[playwright] installing Chromium browser..."]);
+  });
+
+  it("does not install Chromium when the Playwright executable exists", async () => {
+    let installCount = 0;
+
+    await ensureChromiumInstalled({
+      executablePath: () => "/installed/chromium",
+      fileExists: async () => true,
+      install: async () => {
+        installCount += 1;
+      }
+    });
+
+    expect(installCount).toBe(0);
   });
 
   it("resolves a single file path to snippet code", async () => {

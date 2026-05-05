@@ -15,8 +15,6 @@ temporary app code.
 
 ## Install
 
-For AI agents:
-
 ```sh
 npx skills add drawcall-ai/vitexec
 ```
