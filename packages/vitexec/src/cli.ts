@@ -25,8 +25,37 @@ declare global {
 }
 
 export const VITEXEC_TIMEOUT_MS = 10 * 60 * 1000;
+export const VITEXEC_DEFAULT_REMOTE_EXPOSE_NETWORK = "<loopback>";
+export const VITEXEC_ENV = {
+  browserExposeNetwork: "VITEXEC_BROWSER_EXPOSE_NETWORK",
+  browserWsEndpoint: "VITEXEC_BROWSER_WS_ENDPOINT",
+  config: "VITEXEC_CONFIG",
+  cpuProfile: "VITEXEC_CPU_PROFILE",
+  gpu: "VITEXEC_GPU",
+  heapSnapshot: "VITEXEC_HEAP_SNAPSHOT",
+  networkTrace: "VITEXEC_NETWORK_TRACE",
+  path: "VITEXEC_PATH",
+  performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
+  record: "VITEXEC_RECORD",
+  screenshot: "VITEXEC_SCREENSHOT",
+  timeout: "VITEXEC_TIMEOUT"
+} as const;
+export const VITEXEC_REMOTE_GPU_BROWSER_ARGS = [
+  "--headless=new",
+  "--no-sandbox",
+  "--disable-dev-shm-usage",
+  "--enable-gpu",
+  "--ignore-gpu-blocklist",
+  "--use-gl=angle",
+  "--use-angle=vulkan",
+  "--disable-vulkan-surface",
+  "--enable-features=Vulkan",
+  "--enable-unsafe-webgpu"
+] as const;
 
 export type RunVitexecOptions = {
+  browserExposeNetwork?: string;
+  browserWsEndpoint?: string;
   configFile?: string | false;
   cpuProfilePath?: string;
   gpu?: boolean;
@@ -39,6 +68,23 @@ export type RunVitexecOptions = {
   root?: string;
   screenshotPath?: string;
   timeoutMs?: number;
+};
+
+type Environment = Record<string, string | undefined>;
+
+type CliOptions = {
+  browserExposeNetwork?: string;
+  browserWsEndpoint?: string;
+  config?: string;
+  cpuProfile?: string;
+  gpu?: boolean;
+  heapSnapshot?: string;
+  networkTrace?: string;
+  path?: string;
+  performanceTrace?: string;
+  record?: string;
+  screenshot?: string;
+  timeout?: number;
 };
 
 export async function* runVitexec(
@@ -320,12 +366,33 @@ async function launchBrowser(
   options: RunVitexecOptions,
   log: (line: string) => void
 ): Promise<Browser> {
+  if (options.browserWsEndpoint) {
+    return chromium.connect(options.browserWsEndpoint, {
+      exposeNetwork: options.browserExposeNetwork ?? VITEXEC_DEFAULT_REMOTE_EXPOSE_NETWORK,
+      headers: createRemoteBrowserHeaders(options)
+    });
+  }
+
   await ensureChromiumInstalled({ log });
 
   return chromium.launch({
     channel: "chromium",
     args: options.gpu ? ["--enable-gpu", "--ignore-gpu-blocklist"] : undefined
   });
+}
+
+export function createRemoteBrowserHeaders(
+  options: Pick<RunVitexecOptions, "gpu">
+): Record<string, string> | undefined {
+  if (!options.gpu) return undefined;
+
+  return {
+    "x-playwright-launch-options": JSON.stringify({
+      channel: "chromium",
+      ignoreDefaultArgs: ["--enable-unsafe-swiftshader"],
+      args: VITEXEC_REMOTE_GPU_BROWSER_ARGS
+    })
+  };
 }
 
 type EnsureChromiumInstalledOptions = {
@@ -742,7 +809,7 @@ async function collectConsole(
   log: (line: string) => void,
   message: ConsoleMessage
 ): Promise<void> {
-  if (isBrowserResourceError(message)) return;
+  if (isIgnoredBrowserConsoleMessage(message)) return;
 
   const values = await Promise.all(
     message.args().map(async (argument) => argument.jsonValue().catch(() => argument.toString()))
@@ -756,6 +823,14 @@ function isBrowserResourceError(message: ConsoleMessage): boolean {
     message.type() === "error" &&
     message.text().startsWith("Failed to load resource:")
   );
+}
+
+function isIgnoredBrowserConsoleMessage(message: ConsoleMessage): boolean {
+  return isBrowserResourceError(message) || isViteClientDebugMessage(message);
+}
+
+function isViteClientDebugMessage(message: ConsoleMessage): boolean {
+  return message.type() === "debug" && message.text().startsWith("[vite] ");
 }
 
 function formatHttpError(response: Response): string {
@@ -803,6 +878,10 @@ async function main(): Promise<void> {
     .name("vitexec")
     .description("Run a snippet inside a Vite app and print browser logs.")
     .argument("<code-or-file...>", "literal snippet to run, or a path to a snippet file")
+    .option(
+      "--browser-expose-network <rules>",
+      "network rules exposed from this machine to a remote Playwright browser"
+    )
     .option("--config <path>", "use a specific Vite config file")
     .option("--cpu-profile <path>", "write a Chrome/V8 CPU profile after the code runs")
     .option("--gpu", "use Chromium's new headless mode with GPU-friendly flags")
@@ -811,42 +890,26 @@ async function main(): Promise<void> {
     .option("--path <path>", "Vite page path to open")
     .option("--performance-trace <path>", "write a Chrome performance trace after the code runs")
     .option("--record <path>", "write a WebM video recording after the code runs")
+    .option(
+      "--browser-ws-endpoint <ws-endpoint>",
+      "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
+    )
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
     .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
     .showHelpAfterError()
     .parse();
 
   const [codeParts] = program.processedArgs as [string[]];
-  const options = program.opts<{
-    config?: string;
-    cpuProfile?: string;
-    gpu?: boolean;
-    heapSnapshot?: string;
-    networkTrace?: string;
-    path?: string;
-    performanceTrace?: string;
-    record?: string;
-    screenshot?: string;
-    timeout?: number;
-  }>();
+  const options = program.opts<CliOptions>();
 
   try {
     const input = await resolveVitexecCodeInputDetails(codeParts);
     process.stdout.write("logs:\n");
     let hasLogs = false;
-    for await (const line of runVitexec(input.code, {
-      configFile: options.config,
-      cpuProfilePath: options.cpuProfile,
-      gpu: options.gpu,
-      heapSnapshotPath: options.heapSnapshot,
-      moduleExtension: input.moduleExtension,
-      networkTracePath: options.networkTrace,
-      path: options.path,
-      performanceTracePath: options.performanceTrace,
-      recordPath: options.record,
-      screenshotPath: options.screenshot,
-      timeoutMs: options.timeout === undefined ? undefined : options.timeout * 1000
-    })) {
+    for await (const line of runVitexec(input.code, createRunOptions(options, {
+      env: process.env,
+      moduleExtension: input.moduleExtension
+    }))) {
       hasLogs = true;
       process.stdout.write(`${line}\n`);
     }
@@ -857,6 +920,33 @@ async function main(): Promise<void> {
   }
 }
 
+export function createRunOptions(
+  options: CliOptions,
+  context: {
+    env?: Environment;
+    moduleExtension?: VitexecModuleExtension;
+  } = {}
+): RunVitexecOptions {
+  const env = context.env ?? process.env;
+  const timeout = options.timeout ?? envNumber(env, VITEXEC_ENV.timeout, parseTimeoutSeconds);
+
+  return {
+    browserExposeNetwork: options.browserExposeNetwork ?? envString(env, VITEXEC_ENV.browserExposeNetwork),
+    browserWsEndpoint: options.browserWsEndpoint ?? envString(env, VITEXEC_ENV.browserWsEndpoint),
+    configFile: options.config ?? envString(env, VITEXEC_ENV.config),
+    cpuProfilePath: options.cpuProfile ?? envString(env, VITEXEC_ENV.cpuProfile),
+    gpu: options.gpu ?? envBoolean(env, VITEXEC_ENV.gpu),
+    heapSnapshotPath: options.heapSnapshot ?? envString(env, VITEXEC_ENV.heapSnapshot),
+    moduleExtension: context.moduleExtension,
+    networkTracePath: options.networkTrace ?? envString(env, VITEXEC_ENV.networkTrace),
+    path: options.path ?? envString(env, VITEXEC_ENV.path),
+    performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
+    recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
+    screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
+    timeoutMs: timeout === undefined ? undefined : timeout * 1000
+  };
+}
+
 function parseTimeoutSeconds(value: string): number {
   const seconds = Number(value);
   if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -864,6 +954,40 @@ function parseTimeoutSeconds(value: string): number {
   }
 
   return seconds;
+}
+
+function envString(env: Environment, name: string): string | undefined {
+  const value = env[name];
+  return value === undefined || value === "" ? undefined : value;
+}
+
+function envNumber(
+  env: Environment,
+  name: string,
+  parse: (value: string) => number
+): number | undefined {
+  const value = envString(env, name);
+  return value === undefined ? undefined : parse(value);
+}
+
+function envBoolean(env: Environment, name: string): boolean | undefined {
+  const value = envString(env, name);
+  if (value === undefined) return undefined;
+
+  switch (value.toLowerCase()) {
+    case "1":
+    case "true":
+    case "yes":
+    case "on":
+      return true;
+    case "0":
+    case "false":
+    case "no":
+    case "off":
+      return false;
+    default:
+      throw new InvalidArgumentError(`${name} must be one of: 1, 0, true, false, yes, no, on, off`);
+  }
 }
 
 function isEntrypoint(): boolean {

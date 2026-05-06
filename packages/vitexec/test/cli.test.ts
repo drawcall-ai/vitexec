@@ -1,4 +1,6 @@
+import { spawn as spawnProcess } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,19 +8,26 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
 import {
+  createRunOptions,
+  createRemoteBrowserHeaders,
   ensureChromiumInstalled,
   resolveVitexecCodeInputDetails,
   resolveVitexecCodeInput,
   runVitexec,
+  VITEXEC_ENV,
+  VITEXEC_REMOTE_GPU_BROWSER_ARGS,
   VITEXEC_TIMEOUT_MS
 } from "../src/cli.js";
 
 let currentProject: TestProject | undefined;
 let currentTempDir: string | undefined;
+let stopCurrentPlaywrightServer: (() => Promise<void>) | undefined;
 
 afterEach(async () => {
+  await stopCurrentPlaywrightServer?.();
   await currentProject?.close();
   if (currentTempDir) await rm(currentTempDir, { recursive: true, force: true });
+  stopCurrentPlaywrightServer = undefined;
   currentProject = undefined;
   currentTempDir = undefined;
 });
@@ -796,6 +805,110 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] gpu mode");
   });
 
+  it("can connect to a remote Playwright browser server", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>remote</main>"
+    });
+    const server = await startPlaywrightRunServer();
+    stopCurrentPlaywrightServer = server.stop;
+
+    const output = await collectVitexec(
+      "console.log('remote text', document.querySelector('main')?.textContent)",
+      {
+        browserWsEndpoint: server.endpoint,
+        configFile: false,
+        root: currentProject.root
+      }
+    );
+
+    expect(output).toContain("[log] remote text remote");
+  });
+
+  it("sends GPU launch options to remote Playwright browser servers", () => {
+    expect(createRemoteBrowserHeaders({ gpu: false })).toBeUndefined();
+
+    const headers = createRemoteBrowserHeaders({ gpu: true });
+    const launchOptions = JSON.parse(
+      headers?.["x-playwright-launch-options"] ?? "null"
+    );
+
+    expect(launchOptions).toEqual({
+      channel: "chromium",
+      ignoreDefaultArgs: ["--enable-unsafe-swiftshader"],
+      args: VITEXEC_REMOTE_GPU_BROWSER_ARGS
+    });
+  });
+
+  it("can configure run options from environment variables", () => {
+    expect(createRunOptions({}, {
+      env: {
+        [VITEXEC_ENV.browserExposeNetwork]: "*.internal,<loopback>",
+        [VITEXEC_ENV.browserWsEndpoint]: "wss://browser.example.test/",
+        [VITEXEC_ENV.config]: "vite.env.config.ts",
+        [VITEXEC_ENV.cpuProfile]: "artifacts/cpu.cpuprofile",
+        [VITEXEC_ENV.gpu]: "true",
+        [VITEXEC_ENV.heapSnapshot]: "artifacts/heap.json",
+        [VITEXEC_ENV.networkTrace]: "artifacts/network.har",
+        [VITEXEC_ENV.path]: "/env-route",
+        [VITEXEC_ENV.performanceTrace]: "artifacts/performance.trace.json",
+        [VITEXEC_ENV.record]: "artifacts/run.webm",
+        [VITEXEC_ENV.screenshot]: "artifacts/page.png",
+        [VITEXEC_ENV.timeout]: "12"
+      },
+      moduleExtension: ".ts"
+    })).toEqual({
+      browserExposeNetwork: "*.internal,<loopback>",
+      browserWsEndpoint: "wss://browser.example.test/",
+      configFile: "vite.env.config.ts",
+      cpuProfilePath: "artifacts/cpu.cpuprofile",
+      gpu: true,
+      heapSnapshotPath: "artifacts/heap.json",
+      moduleExtension: ".ts",
+      networkTracePath: "artifacts/network.har",
+      path: "/env-route",
+      performanceTracePath: "artifacts/performance.trace.json",
+      recordPath: "artifacts/run.webm",
+      screenshotPath: "artifacts/page.png",
+      timeoutMs: 12_000
+    });
+  });
+
+  it("lets CLI options override environment variables", () => {
+    expect(createRunOptions(
+      {
+        browserWsEndpoint: "wss://cli-browser.example.test/",
+        gpu: false,
+        path: "/cli-route",
+        timeout: 3
+      },
+      {
+        env: {
+          [VITEXEC_ENV.browserWsEndpoint]: "wss://env-browser.example.test/",
+          [VITEXEC_ENV.gpu]: "true",
+          [VITEXEC_ENV.path]: "/env-route",
+          [VITEXEC_ENV.timeout]: "30"
+        }
+      }
+    )).toEqual(expect.objectContaining({
+      browserWsEndpoint: "wss://cli-browser.example.test/",
+      gpu: false,
+      path: "/cli-route",
+      timeoutMs: 3_000
+    }));
+  });
+
+  it("validates boolean environment variables", () => {
+    expect(createRunOptions({}, {
+      env: { [VITEXEC_ENV.gpu]: "on" }
+    }).gpu).toBe(true);
+    expect(createRunOptions({}, {
+      env: { [VITEXEC_ENV.gpu]: "off" }
+    }).gpu).toBe(false);
+    expect(() => createRunOptions({}, {
+      env: { [VITEXEC_ENV.gpu]: "sometimes" }
+    })).toThrow("VITEXEC_GPU must be one of");
+  });
+
   it("reports failed resource loads with URL and status", async () => {
     currentProject = await createTempViteProject({
       "index.html": "<main>ready</main>"
@@ -826,6 +939,97 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[error] timeout after 1ms");
   });
 });
+
+async function startPlaywrightRunServer(): Promise<{
+  endpoint: string;
+  stop: () => Promise<void>;
+}> {
+  const port = await getAvailablePort();
+  const child = spawnProcess(
+    "pnpm",
+    [
+      "exec",
+      "playwright",
+      "run-server",
+      "--host",
+      "127.0.0.1",
+      "--port",
+      String(port),
+      "--path",
+      "/",
+      "--max-clients",
+      "1"
+    ],
+    {
+      cwd: fileURLToPath(new URL("../../..", import.meta.url)),
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  const output: string[] = [];
+
+  const endpoint = await new Promise<string>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error(`Timed out waiting for Playwright server.\n${output.join("")}`));
+    }, 10_000);
+    const finish = (callback: () => void) => {
+      clearTimeout(timeout);
+      child.stdout.off("data", onData);
+      child.stderr.off("data", onData);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      callback();
+    };
+    const onData = (chunk: Buffer) => {
+      output.push(chunk.toString());
+      const match = output.join("").match(/Listening on (ws:\/\/\S+)/);
+      if (match) finish(() => resolve(match[1]));
+    };
+    const onExit = (code: number | null) => {
+      finish(() => {
+        reject(new Error(`Playwright server exited with ${code}.\n${output.join("")}`));
+      });
+    };
+    const onError = (error: Error) => {
+      finish(() => reject(error));
+    };
+
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.on("error", onError);
+    child.on("exit", onExit);
+  });
+
+  return {
+    endpoint,
+    stop: () => new Promise<void>((resolve) => {
+      if (child.exitCode !== null || child.killed) {
+        resolve();
+        return;
+      }
+      child.once("exit", () => resolve());
+      child.kill();
+      setTimeout(() => {
+        if (child.exitCode === null) child.kill("SIGKILL");
+      }, 2_000).unref();
+    })
+  };
+}
+
+async function getAvailablePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createNetServer();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        server.close(() => reject(new Error("Failed to allocate a local port.")));
+        return;
+      }
+      server.close(() => resolve(address.port));
+    });
+  });
+}
 
 type CpuProfile = {
   nodes: Array<{ callFrame: { functionName: string } }>;

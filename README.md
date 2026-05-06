@@ -97,6 +97,8 @@ vitexec --gpu --path /scene ./vitexec/check-scene.ts
 | `--path /scene` | Open a specific route |
 | `--config ./vite.config.ts` | Use a specific Vite config |
 | `--gpu` | Use GPU-friendly Chromium flags |
+| `--browser-ws-endpoint wss://...` | Connect to a Playwright browser WebSocket endpoint |
+| `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
 | `--screenshot ./page.png` | Capture a full-page screenshot |
 | `--record ./run.webm` | Record browser video |
 | `--cpu-profile ./cpu.cpuprofile` | Capture a Chrome/V8 CPU profile |
@@ -104,3 +106,22 @@ vitexec --gpu --path /scene ./vitexec/check-scene.ts
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
 | `--heap-snapshot ./heap.json` | Capture a jq-friendly decoded heap snapshot |
 | `--timeout 30` | Set the maximum wait time |
+
+## Environment Variables
+
+CLI flags take precedence over environment variables.
+
+| Environment variable | Equivalent option |
+|---|---|
+| `VITEXEC_BROWSER_WS_ENDPOINT` | `--browser-ws-endpoint` |
+| `VITEXEC_BROWSER_EXPOSE_NETWORK` | `--browser-expose-network` |
+| `VITEXEC_CONFIG` | `--config` |
+| `VITEXEC_PATH` | `--path` |
+| `VITEXEC_GPU` | `--gpu` |
+| `VITEXEC_TIMEOUT` | `--timeout` |
+| `VITEXEC_SCREENSHOT` | `--screenshot` |
+| `VITEXEC_RECORD` | `--record` |
+| `VITEXEC_CPU_PROFILE` | `--cpu-profile` |
+| `VITEXEC_NETWORK_TRACE` | `--network-trace` |
+| `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
+| `VITEXEC_HEAP_SNAPSHOT` | `--heap-snapshot` |
