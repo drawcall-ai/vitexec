@@ -824,7 +824,7 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] remote text remote");
   });
 
-  it("sends GPU launch options to remote Playwright browser servers", () => {
+  it("sends generic GPU launch options to remote Playwright browser servers", () => {
     expect(createRemoteBrowserHeaders({ gpu: false })).toBeUndefined();
 
     const headers = createRemoteBrowserHeaders({ gpu: true });
@@ -833,10 +833,10 @@ describe("vitexec CLI runner", () => {
     );
 
     expect(launchOptions).toEqual({
-      channel: "chromium",
-      ignoreDefaultArgs: ["--enable-unsafe-swiftshader"],
       args: VITEXEC_REMOTE_GPU_BROWSER_ARGS
     });
+    expect(launchOptions.args).not.toContain("--use-angle=vulkan");
+    expect(launchOptions.args).not.toContain("--enable-features=Vulkan");
   });
 
   it("can configure run options from environment variables", () => {

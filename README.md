@@ -96,7 +96,7 @@ vitexec --gpu --path /scene ./vitexec/check-scene.ts
 |---|---|
 | `--path /scene` | Open a specific route |
 | `--config ./vite.config.ts` | Use a specific Vite config |
-| `--gpu` | Use GPU-friendly Chromium flags |
+| `--gpu` | Use generic GPU/WebGPU-friendly Chromium flags |
 | `--browser-ws-endpoint wss://...` | Connect to a Playwright browser WebSocket endpoint |
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
 | `--screenshot ./page.png` | Capture a full-page screenshot |
@@ -125,3 +125,7 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_NETWORK_TRACE` | `--network-trace` |
 | `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
 | `VITEXEC_HEAP_SNAPSHOT` | `--heap-snapshot` |
+
+When `--browser-ws-endpoint` is set, vitexec only sends browser-generic
+GPU/WebGPU launch flags. Start the remote Playwright server with any
+host-specific GPU policy that matches its platform.

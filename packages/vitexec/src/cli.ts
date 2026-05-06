@@ -40,17 +40,13 @@ export const VITEXEC_ENV = {
   screenshot: "VITEXEC_SCREENSHOT",
   timeout: "VITEXEC_TIMEOUT"
 } as const;
-export const VITEXEC_REMOTE_GPU_BROWSER_ARGS = [
-  "--headless=new",
-  "--no-sandbox",
-  "--disable-dev-shm-usage",
+export const VITEXEC_LOCAL_GPU_BROWSER_ARGS = [
   "--enable-gpu",
   "--ignore-gpu-blocklist",
-  "--use-gl=angle",
-  "--use-angle=vulkan",
-  "--disable-vulkan-surface",
-  "--enable-features=Vulkan",
   "--enable-unsafe-webgpu"
+] as const;
+export const VITEXEC_REMOTE_GPU_BROWSER_ARGS = [
+  ...VITEXEC_LOCAL_GPU_BROWSER_ARGS
 ] as const;
 
 export type RunVitexecOptions = {
@@ -377,7 +373,7 @@ async function launchBrowser(
 
   return chromium.launch({
     channel: "chromium",
-    args: options.gpu ? ["--enable-gpu", "--ignore-gpu-blocklist"] : undefined
+    args: options.gpu ? [...VITEXEC_LOCAL_GPU_BROWSER_ARGS] : undefined
   });
 }
 
@@ -388,8 +384,6 @@ export function createRemoteBrowserHeaders(
 
   return {
     "x-playwright-launch-options": JSON.stringify({
-      channel: "chromium",
-      ignoreDefaultArgs: ["--enable-unsafe-swiftshader"],
       args: VITEXEC_REMOTE_GPU_BROWSER_ARGS
     })
   };

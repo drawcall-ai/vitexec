@@ -47,7 +47,7 @@ vitexec --path /cart '
 - Keep logs concise; overly verbose logs become unreadable and unnecessarily fill the context.
 - Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.
 - Use `--gpu` for WebGL, canvas, Three.js, and WebXR behavior.
-- If the local machine has no usable GPU, use `--gpu --browser-ws-endpoint <ws-url>` to run the browser on a remote Playwright server.
+- If the local machine has no usable GPU, use `--gpu --browser-ws-endpoint <ws-url>` to connect to a remote Playwright server that was started with the right host-specific GPU settings.
 - If repeated runs need the same endpoint or artifact settings, prefer `VITEXEC_*` environment variables over repeating long flags.
 - Use screenshots or recordings only when visual evidence matters.
 - Do not leave temporary code in the app when `vitexec` can inspect it from outside.
