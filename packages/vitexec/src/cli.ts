@@ -33,6 +33,7 @@ export const VITEXEC_ENV = {
   cpuProfile: "VITEXEC_CPU_PROFILE",
   gpu: "VITEXEC_GPU",
   heapSnapshot: "VITEXEC_HEAP_SNAPSHOT",
+  htmlInCanvas: "VITEXEC_HTML_IN_CANVAS",
   networkTrace: "VITEXEC_NETWORK_TRACE",
   path: "VITEXEC_PATH",
   performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
@@ -48,6 +49,12 @@ export const VITEXEC_LOCAL_GPU_BROWSER_ARGS = [
 export const VITEXEC_REMOTE_GPU_BROWSER_ARGS = [
   ...VITEXEC_LOCAL_GPU_BROWSER_ARGS
 ] as const;
+export const VITEXEC_LOCAL_HTML_IN_CANVAS_BROWSER_ARGS = [
+  "--enable-blink-features=CanvasDrawElement"
+] as const;
+export const VITEXEC_REMOTE_HTML_IN_CANVAS_BROWSER_ARGS = [
+  ...VITEXEC_LOCAL_HTML_IN_CANVAS_BROWSER_ARGS
+] as const;
 
 export type RunVitexecOptions = {
   browserExposeNetwork?: string;
@@ -56,6 +63,7 @@ export type RunVitexecOptions = {
   cpuProfilePath?: string;
   gpu?: boolean;
   heapSnapshotPath?: string;
+  htmlInCanvas?: boolean;
   moduleExtension?: VitexecModuleExtension;
   networkTracePath?: string;
   path?: string;
@@ -75,6 +83,7 @@ type CliOptions = {
   cpuProfile?: string;
   gpu?: boolean;
   heapSnapshot?: string;
+  htmlInCanvas?: boolean;
   networkTrace?: string;
   path?: string;
   performanceTrace?: string;
@@ -371,21 +380,28 @@ async function launchBrowser(
 
   await ensureChromiumInstalled({ log });
 
+  const args = [
+    ...(options.gpu ? VITEXEC_LOCAL_GPU_BROWSER_ARGS : []),
+    ...(options.htmlInCanvas ? VITEXEC_LOCAL_HTML_IN_CANVAS_BROWSER_ARGS : [])
+  ];
   return chromium.launch({
     channel: "chromium",
-    args: options.gpu ? [...VITEXEC_LOCAL_GPU_BROWSER_ARGS] : undefined
+    args: args.length > 0 ? args : undefined
   });
 }
 
 export function createRemoteBrowserHeaders(
-  options: Pick<RunVitexecOptions, "gpu">
+  options: Pick<RunVitexecOptions, "gpu" | "htmlInCanvas">
 ): Record<string, string> | undefined {
-  if (!options.gpu) return undefined;
+  if (!options.gpu && !options.htmlInCanvas) return undefined;
+
+  const args = [
+    ...(options.gpu ? VITEXEC_REMOTE_GPU_BROWSER_ARGS : []),
+    ...(options.htmlInCanvas ? VITEXEC_REMOTE_HTML_IN_CANVAS_BROWSER_ARGS : [])
+  ];
 
   return {
-    "x-playwright-launch-options": JSON.stringify({
-      args: VITEXEC_REMOTE_GPU_BROWSER_ARGS
-    })
+    "x-playwright-launch-options": JSON.stringify({ args })
   };
 }
 
@@ -880,6 +896,7 @@ async function main(): Promise<void> {
     .option("--cpu-profile <path>", "write a Chrome/V8 CPU profile after the code runs")
     .option("--gpu", "use Chromium's new headless mode with GPU-friendly flags")
     .option("--heap-snapshot <path>", "write an agent-friendly heap snapshot summary after the code runs")
+    .option("--html-in-canvas", "enable Chrome's html-in-canvas API (canvas-draw-element)")
     .option("--network-trace <path>", "write a HAR network trace after the code runs")
     .option("--path <path>", "Vite page path to open")
     .option("--performance-trace <path>", "write a Chrome performance trace after the code runs")
@@ -931,6 +948,7 @@ export function createRunOptions(
     cpuProfilePath: options.cpuProfile ?? envString(env, VITEXEC_ENV.cpuProfile),
     gpu: options.gpu ?? envBoolean(env, VITEXEC_ENV.gpu),
     heapSnapshotPath: options.heapSnapshot ?? envString(env, VITEXEC_ENV.heapSnapshot),
+    htmlInCanvas: options.htmlInCanvas ?? envBoolean(env, VITEXEC_ENV.htmlInCanvas),
     moduleExtension: context.moduleExtension,
     networkTracePath: options.networkTrace ?? envString(env, VITEXEC_ENV.networkTrace),
     path: options.path ?? envString(env, VITEXEC_ENV.path),
