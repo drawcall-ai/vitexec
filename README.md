@@ -97,6 +97,7 @@ vitexec --gpu --path /scene ./vitexec/check-scene.ts
 | `--path /scene` | Open a specific route |
 | `--config ./vite.config.ts` | Use a specific Vite config |
 | `--gpu` | Use generic GPU/WebGPU-friendly Chromium flags |
+| `--html-in-canvas` | Enable Chrome's html-in-canvas API (`canvas-draw-element`) |
 | `--browser-ws-endpoint wss://...` | Connect to a Playwright browser WebSocket endpoint |
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
 | `--screenshot ./page.png` | Capture a full-page screenshot |
@@ -118,6 +119,7 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_CONFIG` | `--config` |
 | `VITEXEC_PATH` | `--path` |
 | `VITEXEC_GPU` | `--gpu` |
+| `VITEXEC_HTML_IN_CANVAS` | `--html-in-canvas` |
 | `VITEXEC_TIMEOUT` | `--timeout` |
 | `VITEXEC_SCREENSHOT` | `--screenshot` |
 | `VITEXEC_RECORD` | `--record` |

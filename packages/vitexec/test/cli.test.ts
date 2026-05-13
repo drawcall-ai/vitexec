@@ -805,6 +805,19 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] gpu mode");
   });
 
+  it("can launch with html-in-canvas mode (canvas-draw-element)", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      "console.log('drawElementImage type:', typeof document.createElement('canvas').getContext('2d').drawElementImage)",
+      { configFile: false, root: currentProject.root, htmlInCanvas: true }
+    );
+
+    expect(output).toContain("[log] drawElementImage type: function");
+  });
+
   it("can connect to a remote Playwright browser server", async () => {
     currentProject = await createTempViteProject({
       "index.html": "<main>remote</main>"
