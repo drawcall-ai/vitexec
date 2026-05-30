@@ -4,6 +4,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
@@ -14,6 +15,7 @@ import {
   resolveVitexecCodeInputDetails,
   resolveVitexecCodeInput,
   runVitexec,
+  runVitexecOnPage,
   VITEXEC_ENV,
   VITEXEC_REMOTE_GPU_BROWSER_ARGS,
   VITEXEC_TIMEOUT_MS
@@ -822,6 +824,127 @@ describe("vitexec CLI runner", () => {
     );
 
     expect(output).toContain("[log] remote text remote");
+  });
+
+  it("adopts an existing page and leaves it (and its browser) open", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>adopt</main>"
+    });
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext({ ignoreHTTPSErrors: true });
+      const page = await context.newPage();
+      await page.goto("about:blank");
+
+      const output = await collectVitexec(
+        "console.log('adopted', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, page }
+      );
+
+      expect(output).toContain("[log] adopted adopt");
+      // vitexec must never close a caller-owned page/browser.
+      expect(page.isClosed()).toBe(false);
+      expect(browser.isConnected()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("reuses one adopted page across sequential runs without re-binding errors", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>reuse</main>"
+    });
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext({ ignoreHTTPSErrors: true });
+      const page = await context.newPage();
+      await page.goto("about:blank");
+
+      const first = await collectVitexec("console.log('run-1')", {
+        configFile: false,
+        root: currentProject.root,
+        page
+      });
+      const second = await collectVitexec("console.log('run-2')", {
+        configFile: false,
+        root: currentProject.root,
+        page
+      });
+
+      expect(first).toContain("[log] run-1");
+      // A second run on the same page must not throw "function already registered".
+      expect(second).toContain("[log] run-2");
+      expect(page.isClosed()).toBe(false);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("runVitexecOnPage runs a snippet in a provided page without closing it", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>on-page</main>"
+    });
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext({ ignoreHTTPSErrors: true });
+      const page = await context.newPage();
+      await page.goto("about:blank");
+
+      const logs: string[] = [];
+      for await (const line of runVitexecOnPage(
+        "console.log('via', document.querySelector('main')?.textContent)",
+        page,
+        { configFile: false, root: currentProject.root }
+      )) {
+        logs.push(line);
+      }
+
+      expect(logs.join("\n")).toContain("[log] via on-page");
+      expect(page.isClosed()).toBe(false);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("adopts a context (fresh page inside it) without closing the context", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ctx</main>"
+    });
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext({ ignoreHTTPSErrors: true });
+
+      const output = await collectVitexec(
+        "console.log('ctx', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, context }
+      );
+
+      expect(output).toContain("[log] ctx ctx");
+      // The caller-owned context (and browser) must stay open.
+      expect(browser.isConnected()).toBe(true);
+      expect(context.pages().length).toBeGreaterThan(0);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("adopts a browser (fresh context+page) and leaves the browser open", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>br</main>"
+    });
+    const browser = await chromium.launch();
+    try {
+      const output = await collectVitexec(
+        "console.log('br', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, browser }
+      );
+
+      expect(output).toContain("[log] br br");
+      // vitexec closes the context IT created, but never the adopted browser.
+      expect(browser.isConnected()).toBe(true);
+    } finally {
+      await browser.close();
+    }
   });
 
   it("sends generic GPU launch options to remote Playwright browser servers", () => {
