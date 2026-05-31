@@ -105,6 +105,7 @@ vitexec --gpu --path /scene ./vitexec/check-scene.ts
 | `--network-trace ./network.har` | Capture network requests as HAR |
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
 | `--heap-snapshot ./heap.json` | Capture a jq-friendly decoded heap snapshot |
+| `--keep-browser-open` | Leave a `--browser-ws-endpoint` browser running after the run |
 | `--timeout 30` | Set the maximum wait time |
 
 ## Environment Variables
@@ -125,7 +126,44 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_NETWORK_TRACE` | `--network-trace` |
 | `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
 | `VITEXEC_HEAP_SNAPSHOT` | `--heap-snapshot` |
+| `VITEXEC_KEEP_BROWSER_OPEN` | `--keep-browser-open` |
 
 When `--browser-ws-endpoint` is set, vitexec only sends browser-generic
 GPU/WebGPU launch flags. Start the remote Playwright server with any
 host-specific GPU policy that matches its platform.
+
+## Run inside a browser you already have (page adoption)
+
+By default vitexec launches its own Chromium. When you call it programmatically
+you can instead hand it a browser/context/page you already own — so the snippet
+runs in **that** browser with **no second window**. This is ideal when a dev
+server already opens a visible, instrumented tab (e.g. a WebXR emulator) and you
+want to watch the check run live in it.
+
+```ts
+import { runVitexec, runVitexecOnPage } from "vitexec/dist/cli.js";
+
+// Adopt an existing Playwright Page (same process). vitexec navigates it to its
+// own injected URL, runs the snippet, and never closes the page/context/browser.
+for await (const line of runVitexecOnPage(code, page, { root })) console.log(line);
+
+// Or pass handles directly:
+runVitexec(code, { root, page });                 // reuse this page
+runVitexec(code, { root, context });              // open a fresh page in this context
+runVitexec(code, { root, browser });              // open a fresh context+page in this browser
+runVitexec(code, { root, adoptPage: () => page }); // thunk resolved AFTER the server is listening
+```
+
+`adoptPage` is a thunk so a caller that opens the browser *in reaction to*
+vitexec's own dev server starting (a Vite plugin launching a browser on
+`listening`) can hand the page over once it exists.
+
+Ownership is automatic: when a page/context/browser is adopted, vitexec reuses it
+and never closes it (`keepBrowserOpen` is implied) — it only ever closes handles
+it created itself, and always closes its own Vite server. On the
+`--browser-ws-endpoint` path, set `keepBrowserOpen` to leave a `launchServer`
+browser running between runs.
+
+vitexec still serves the snippet from its own Vite server (that is where the
+injected module lives), so an adopted page is navigated to vitexec's per-run URL.
+A re-used page is safe to drive across many sequential runs.

@@ -10,6 +10,14 @@ export type VitexecPluginOptions = {
   code: string;
   id: string;
   moduleExtension?: VitexecModuleExtension;
+  /**
+   * When true, the injected runtime only imports the snippet after the page sets
+   * `globalThis.__vitexecArm === id`. Used when adopting an already-loaded page so
+   * the snippet does not run on the page's pre-existing load (before vitexec has
+   * exposed `__vitexecReport`). Fresh pages owned by vitexec leave this false and
+   * run unconditionally — identical to the default behavior.
+   */
+  armed?: boolean;
 };
 
 function decodeId(value: string): string | undefined {
@@ -65,12 +73,23 @@ function idFromResolvedModuleId(
   return decodeId(encodedId);
 }
 
-function runtimeScript(id: string, base: string): string {
+function runtimeScript(id: string, base: string, armed: boolean): string {
+  const run = `globalThis.__vitexecRuns[${JSON.stringify(id)}] = import(${JSON.stringify(codeRouteForBase(base))} + "/" + ${JSON.stringify(encodeURIComponent(id))})
+  .catch(console.error)
+  .finally(() => globalThis.__vitexecReport?.());`;
+
+  if (!armed) {
+    return `
+globalThis.__vitexecRuns ??= {};
+${run}
+`;
+  }
+
   return `
 globalThis.__vitexecRuns ??= {};
-globalThis.__vitexecRuns[${JSON.stringify(id)}] = import(${JSON.stringify(codeRouteForBase(base))} + "/" + ${JSON.stringify(encodeURIComponent(id))})
-  .catch(console.error)
-  .finally(() => globalThis.__vitexecReport?.());
+if (globalThis.__vitexecArm === ${JSON.stringify(id)}) {
+  ${run}
+}
 `;
 }
 
@@ -130,7 +149,7 @@ export function vitexec(options: VitexecPluginOptions): Plugin {
             attrs: {
               type: "module"
             },
-            children: runtimeScript(options.id, base),
+            children: runtimeScript(options.id, base, options.armed ?? false),
             injectTo: "head"
           }
         ]

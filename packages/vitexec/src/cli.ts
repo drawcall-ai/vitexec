@@ -13,6 +13,7 @@ import {
   type BrowserContext,
   type CDPSession,
   type ConsoleMessage,
+  type Frame,
   type Page,
   type Request,
   type Response
@@ -38,7 +39,8 @@ export const VITEXEC_ENV = {
   performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
   record: "VITEXEC_RECORD",
   screenshot: "VITEXEC_SCREENSHOT",
-  timeout: "VITEXEC_TIMEOUT"
+  timeout: "VITEXEC_TIMEOUT",
+  keepBrowserOpen: "VITEXEC_KEEP_BROWSER_OPEN"
 } as const;
 export const VITEXEC_LOCAL_GPU_BROWSER_ARGS = [
   "--enable-gpu",
@@ -64,7 +66,60 @@ export type RunVitexecOptions = {
   root?: string;
   screenshotPath?: string;
   timeoutMs?: number;
+  /**
+   * Adopt an already-open Playwright Page instead of launching/connecting a
+   * browser. The thunk is invoked AFTER vitexec's Vite server is listening, so
+   * a caller (e.g. a Vite plugin that launches a browser on `listening`) can
+   * hand over the page it just opened. vitexec navigates that page to its own
+   * per-run URL, runs the snippet, and never closes the page/context/browser.
+   * Same-process only — a Page is a live RPC proxy bound to its owning process.
+   */
+  adoptPage?: () => Page | Promise<Page>;
+  /** Adopt an already-open Page directly (same constraints as `adoptPage`). */
+  page?: Page;
+  /** Adopt a context (vitexec opens a fresh page in it) instead of newContext. */
+  context?: BrowserContext;
+  /** Adopt a browser (vitexec opens a fresh context+page) instead of launch/connect. */
+  browser?: Browser;
+  /**
+   * Never close the browser/context/page on finish or abort. Implied true when
+   * a page/context/browser is adopted; also settable on the `browserWsEndpoint`
+   * path to leave a `launchServer` browser running between runs. vitexec always
+   * still closes its own Vite server.
+   */
+  keepBrowserOpen?: boolean;
 };
+
+// One stable `__vitexecReport` binding per page, dispatching to the current
+// run's resolver. Lets a single adopted page be reused across sequential runs
+// without Playwright's "function already registered" error.
+const VITEXEC_BOUND_PAGES = new WeakSet<Page>();
+const VITEXEC_REPORT_RESOLVERS = new WeakMap<Page, () => void>();
+
+async function ensureReportBinding(page: Page): Promise<void> {
+  if (VITEXEC_BOUND_PAGES.has(page)) return;
+  VITEXEC_BOUND_PAGES.add(page);
+  try {
+    await page.exposeFunction("__vitexecReport", () => {
+      VITEXEC_REPORT_RESOLVERS.get(page)?.();
+    });
+  } catch {
+    // Already exposed on a reused page (e.g. survived a prior run). The resolver
+    // indirection means the existing binding routes to the current run — safe.
+  }
+}
+
+/**
+ * Convenience wrapper: run a snippet inside an already-open Playwright Page
+ * (e.g. a dev server's visible managed tab) without launching a second browser.
+ */
+export function runVitexecOnPage(
+  code: string,
+  page: Page,
+  options: Omit<RunVitexecOptions, "page" | "adoptPage"> = {}
+): AsyncGenerator<string> {
+  return runVitexec(code, { ...options, page, keepBrowserOpen: true });
+}
 
 type Environment = Record<string, string | undefined>;
 
@@ -81,6 +136,7 @@ type CliOptions = {
   record?: string;
   screenshot?: string;
   timeout?: number;
+  keepBrowserOpen?: boolean;
 };
 
 export async function* runVitexec(
@@ -194,7 +250,18 @@ async function runVitexecInServerTask(
   let page: Page | undefined;
   let cdp: CDPSession | undefined;
   let performanceTrace: PerformanceTraceCapture | undefined;
-  const closeBrowser = () => void browser?.close().catch(() => undefined);
+
+  // Ownership: vitexec only closes browser-tree handles it created itself. When a
+  // caller adopts an existing page/context/browser (e.g. a dev server handing
+  // over its visible managed tab), vitexec reuses it and leaves it open. vitexec
+  // always owns and closes its own Vite server (see runVitexec).
+  let ownsBrowser = false;
+  let ownsContext = false;
+  let ownsPage = false;
+  let keepOpen = options.keepBrowserOpen ?? false;
+  const closeBrowser = () => {
+    if (!keepOpen) void browser?.close().catch(() => undefined);
+  };
 
   const pendingConsoleLogs = new Set<Promise<void>>();
   const collectConsoleLog = (message: ConsoleMessage) => {
@@ -202,22 +269,67 @@ async function runVitexecInServerTask(
     pendingConsoleLogs.add(pendingLog);
     pendingLog.finally(() => pendingConsoleLogs.delete(pendingLog));
   };
+  const onPageError = (error: Error) => log(`[page error] ${error.message}`);
+  const onRequestFailed = (request: Request) => log(formatRequestFailure(request));
+  const onResponse = (response: Response) => {
+    if (response.status() >= 400) log(formatHttpError(response));
+  };
+  let hasMainFrameNavigated = false;
+  const onFrameNavigated = (frame: Frame) => {
+    if (frame !== page?.mainFrame()) return;
+    if (hasMainFrameNavigated) log(`[navigation] navigated ${frame.url()}`);
+    hasMainFrameNavigated = true;
+  };
+
   try {
-    browser = await launchBrowser(options, log);
-    signal.addEventListener("abort", closeBrowser, { once: true });
+    const adoptedPage =
+      options.page ?? (options.adoptPage ? await options.adoptPage() : undefined);
+
+    if (adoptedPage) {
+      page = adoptedPage;
+      context = page.context();
+      browser = context.browser() ?? undefined;
+      keepOpen = true;
+    } else if (options.context) {
+      context = options.context;
+      browser = context.browser() ?? undefined;
+      keepOpen = true;
+      ownsPage = true;
+      page = await context.newPage();
+    } else if (options.browser) {
+      browser = options.browser;
+      keepOpen = true;
+      ownsContext = true;
+      ownsPage = true;
+    } else {
+      browser = await launchBrowser(options, log);
+      ownsBrowser = true;
+      ownsContext = true;
+      ownsPage = true;
+      signal.addEventListener("abort", closeBrowser, { once: true });
+    }
     if (signal.aborted) return;
 
-    if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
-    context = await browser.newContext({
-      ignoreHTTPSErrors: true,
-      ...(options.networkTracePath && !signal.aborted
-        ? { recordHar: { path: options.networkTracePath } }
-        : {}),
-      ...(options.recordPath && !signal.aborted
-        ? { recordVideo: { dir: dirname(options.recordPath) } }
-        : {})
-    });
-    page = await context.newPage();
+    if (ownsContext) {
+      if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
+      context = await browser!.newContext({
+        ignoreHTTPSErrors: true,
+        ...(options.networkTracePath && !signal.aborted
+          ? { recordHar: { path: options.networkTracePath } }
+          : {}),
+        ...(options.recordPath && !signal.aborted
+          ? { recordVideo: { dir: dirname(options.recordPath) } }
+          : {})
+      });
+      page = await context.newPage();
+    }
+    if (!page || !context) {
+      throw new Error("vitexec could not acquire a browser page.");
+    }
+    if (!ownsContext && (options.networkTracePath || options.recordPath)) {
+      log("[skipped] --record / --network-trace require a vitexec-created context; ignored for adopted page");
+    }
+
     cdp = await context.newCDPSession(page);
     if (options.cpuProfilePath) {
       await cdp.send("Profiler.enable");
@@ -229,21 +341,24 @@ async function runVitexecInServerTask(
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(timeoutMs);
     page.on("console", collectConsoleLog);
-    page.on("pageerror", (error) => log(`[page error] ${error.message}`));
-    page.on("requestfailed", (request) => log(formatRequestFailure(request)));
-    page.on("response", (response) => {
-      if (response.status() >= 400) log(formatHttpError(response));
-    });
-    let hasMainFrameNavigated = false;
-    page.on("framenavigated", (frame) => {
-      if (frame !== page?.mainFrame()) return;
-      if (hasMainFrameNavigated) {
-        log(`[navigation] navigated ${frame.url()}`);
-      }
-      hasMainFrameNavigated = true;
-    });
+    page.on("pageerror", onPageError);
+    page.on("requestfailed", onRequestFailed);
+    page.on("response", onResponse);
+    page.on("framenavigated", onFrameNavigated);
+
     const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
-    await page.exposeFunction("__vitexecReport", injectedCodeFinished.resolve);
+    VITEXEC_REPORT_RESOLVERS.set(page, injectedCodeFinished.resolve);
+    await ensureReportBinding(page);
+
+    // An adopted page has already loaded once (its pre-existing document). The
+    // injected runtime is "armed" (see startViteServer), so arm it now — before
+    // our own navigation — so the snippet runs exactly once, on our load, after
+    // __vitexecReport is bound. Fresh owned pages are not armed.
+    if (adoptedPage) {
+      await page.addInitScript((armId) => {
+        (globalThis as Record<string, unknown>).__vitexecArm = armId;
+      }, id);
+    }
 
     const response = await page.goto(url, {
       timeout: timeoutMs,
@@ -278,13 +393,24 @@ async function runVitexecInServerTask(
         await saveHeapSnapshotSummary(cdp, options.heapSnapshotPath);
         log(`[heap-snapshot] ${options.heapSnapshotPath}`);
       }
-      if (page && options.recordPath && !signal.aborted) {
+      if (ownsContext && page && options.recordPath && !signal.aborted) {
         await saveRecording(page, options.recordPath);
         log(`[recording] ${options.recordPath}`);
       }
     } finally {
       signal.removeEventListener("abort", closeBrowser);
-      if (context) {
+      // Detach our own listeners so an adopted (reused) page does not accumulate
+      // handlers across runs; the caller's own listeners are untouched.
+      if (page) {
+        VITEXEC_REPORT_RESOLVERS.delete(page);
+        page.off("console", collectConsoleLog);
+        page.off("pageerror", onPageError);
+        page.off("requestfailed", onRequestFailed);
+        page.off("response", onResponse);
+        page.off("framenavigated", onFrameNavigated);
+      }
+      if (cdp) await cdp.detach().catch(() => undefined);
+      if (ownsContext && context) {
         await context.close().then(
           () => {
             if (options.networkTracePath && !signal.aborted) {
@@ -294,7 +420,7 @@ async function runVitexecInServerTask(
           () => undefined
         );
       }
-      await browser?.close().catch(() => undefined);
+      if (ownsBrowser && !keepOpen) await browser?.close().catch(() => undefined);
     }
   }
 }
@@ -305,6 +431,9 @@ async function startViteServer(
   options: RunVitexecOptions
 ): Promise<ViteDevServer> {
   const root = await resolveViteRootOption(options);
+  // Arm the injected runtime when we will adopt an already-loaded page, so the
+  // snippet runs only after vitexec arms+navigates it (not on its prior load).
+  const armed = Boolean(options.page || options.adoptPage);
   const server = await createServer({
     configFile: options.configFile,
     root,
@@ -317,7 +446,7 @@ async function startViteServer(
       strictPort: false,
       watch: null
     },
-    plugins: [vitexec({ code, id, moduleExtension: options.moduleExtension })]
+    plugins: [vitexec({ code, id, moduleExtension: options.moduleExtension, armed })]
   });
 
   await server.listen();
@@ -889,6 +1018,7 @@ async function main(): Promise<void> {
       "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
     )
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
+    .option("--keep-browser-open", "leave the connected browser running after the code finishes (for --browser-ws-endpoint)")
     .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
     .showHelpAfterError()
     .parse();
@@ -937,6 +1067,7 @@ export function createRunOptions(
     performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
     recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
+    keepBrowserOpen: options.keepBrowserOpen ?? envBoolean(env, VITEXEC_ENV.keepBrowserOpen),
     timeoutMs: timeout === undefined ? undefined : timeout * 1000
   };
 }
