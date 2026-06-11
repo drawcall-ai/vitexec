@@ -36,9 +36,6 @@ jobs:
       - name: Check npm
         run: npm --version
 
-      - name: Install Playwright browser
-        run: pnpm exec playwright install chromium
-
       - name: Setup GitVersion
         uses: gittools/actions/gitversion/setup@v0
         with:
