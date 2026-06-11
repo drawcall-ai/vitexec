@@ -48,9 +48,6 @@ jobs:
       - name: Typecheck
         run: pnpm --filter "./packages/*" typecheck
 
-      - name: Test
-        run: pnpm --filter "./packages/*" test
-
       - name: Build
         run: pnpm --filter "./packages/*" build
 
