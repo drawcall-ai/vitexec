@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
 import {
+  createBrowserArgs,
   createRunOptions,
   createRemoteBrowserHeaders,
   ensureChromiumInstalled,
@@ -839,9 +840,32 @@ describe("vitexec CLI runner", () => {
     expect(launchOptions.args).not.toContain("--enable-features=Vulkan");
   });
 
+  it("can add custom browser launch args locally and remotely", () => {
+    const browserArgs = [
+      "--enable-features=Vulkan",
+      "--use-angle=vulkan",
+      "--use-vulkan=native"
+    ];
+
+    expect(createBrowserArgs({ gpu: true, browserArgs })).toEqual([
+      ...VITEXEC_REMOTE_GPU_BROWSER_ARGS,
+      ...browserArgs
+    ]);
+
+    const headers = createRemoteBrowserHeaders({ gpu: true, browserArgs });
+    const launchOptions = JSON.parse(
+      headers?.["x-playwright-launch-options"] ?? "null"
+    );
+
+    expect(launchOptions).toEqual({
+      args: [...VITEXEC_REMOTE_GPU_BROWSER_ARGS, ...browserArgs]
+    });
+  });
+
   it("can configure run options from environment variables", () => {
     expect(createRunOptions({}, {
       env: {
+        [VITEXEC_ENV.browserArgs]: "[\"--use-angle=vulkan\",\"--use-vulkan=native\"]",
         [VITEXEC_ENV.browserExposeNetwork]: "*.internal,<loopback>",
         [VITEXEC_ENV.browserWsEndpoint]: "wss://browser.example.test/",
         [VITEXEC_ENV.config]: "vite.env.config.ts",
@@ -857,6 +881,7 @@ describe("vitexec CLI runner", () => {
       },
       moduleExtension: ".ts"
     })).toEqual({
+      browserArgs: ["--use-angle=vulkan", "--use-vulkan=native"],
       browserExposeNetwork: "*.internal,<loopback>",
       browserWsEndpoint: "wss://browser.example.test/",
       configFile: "vite.env.config.ts",
@@ -876,6 +901,7 @@ describe("vitexec CLI runner", () => {
   it("lets CLI options override environment variables", () => {
     expect(createRunOptions(
       {
+        browserArg: ["--cli-browser-arg"],
         browserWsEndpoint: "wss://cli-browser.example.test/",
         gpu: false,
         path: "/cli-route",
@@ -884,12 +910,14 @@ describe("vitexec CLI runner", () => {
       {
         env: {
           [VITEXEC_ENV.browserWsEndpoint]: "wss://env-browser.example.test/",
+          [VITEXEC_ENV.browserArgs]: "[\"--env-browser-arg\"]",
           [VITEXEC_ENV.gpu]: "true",
           [VITEXEC_ENV.path]: "/env-route",
           [VITEXEC_ENV.timeout]: "30"
         }
       }
     )).toEqual(expect.objectContaining({
+      browserArgs: ["--cli-browser-arg"],
       browserWsEndpoint: "wss://cli-browser.example.test/",
       gpu: false,
       path: "/cli-route",
@@ -907,6 +935,16 @@ describe("vitexec CLI runner", () => {
     expect(() => createRunOptions({}, {
       env: { [VITEXEC_ENV.gpu]: "sometimes" }
     })).toThrow("VITEXEC_GPU must be one of");
+  });
+
+  it("validates browser args environment variables", () => {
+    expect(() => createRunOptions({}, {
+      env: { [VITEXEC_ENV.browserArgs]: "--use-angle=vulkan" }
+    })).toThrow("VITEXEC_BROWSER_ARGS must be a JSON string array");
+
+    expect(() => createRunOptions({}, {
+      env: { [VITEXEC_ENV.browserArgs]: "[\"--ok\", 123]" }
+    })).toThrow("VITEXEC_BROWSER_ARGS must be a JSON string array");
   });
 
   it("reports failed resource loads with URL and status", async () => {

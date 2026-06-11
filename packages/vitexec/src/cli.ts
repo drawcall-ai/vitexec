@@ -27,6 +27,7 @@ declare global {
 export const VITEXEC_TIMEOUT_MS = 10 * 60 * 1000;
 export const VITEXEC_DEFAULT_REMOTE_EXPOSE_NETWORK = "<loopback>";
 export const VITEXEC_ENV = {
+  browserArgs: "VITEXEC_BROWSER_ARGS",
   browserExposeNetwork: "VITEXEC_BROWSER_EXPOSE_NETWORK",
   browserWsEndpoint: "VITEXEC_BROWSER_WS_ENDPOINT",
   config: "VITEXEC_CONFIG",
@@ -50,6 +51,7 @@ export const VITEXEC_REMOTE_GPU_BROWSER_ARGS = [
 ] as const;
 
 export type RunVitexecOptions = {
+  browserArgs?: string[];
   browserExposeNetwork?: string;
   browserWsEndpoint?: string;
   configFile?: string | false;
@@ -69,6 +71,7 @@ export type RunVitexecOptions = {
 type Environment = Record<string, string | undefined>;
 
 type CliOptions = {
+  browserArg?: string[];
   browserExposeNetwork?: string;
   browserWsEndpoint?: string;
   config?: string;
@@ -373,20 +376,32 @@ async function launchBrowser(
 
   return chromium.launch({
     channel: "chromium",
-    args: options.gpu ? [...VITEXEC_LOCAL_GPU_BROWSER_ARGS] : undefined
+    args: createBrowserArgs(options)
   });
 }
 
 export function createRemoteBrowserHeaders(
-  options: Pick<RunVitexecOptions, "gpu">
+  options: Pick<RunVitexecOptions, "browserArgs" | "gpu">
 ): Record<string, string> | undefined {
-  if (!options.gpu) return undefined;
+  const args = createBrowserArgs(options);
+  if (!args) return undefined;
 
   return {
     "x-playwright-launch-options": JSON.stringify({
-      args: VITEXEC_REMOTE_GPU_BROWSER_ARGS
+      args
     })
   };
+}
+
+export function createBrowserArgs(
+  options: Pick<RunVitexecOptions, "browserArgs" | "gpu">
+): string[] | undefined {
+  const args = [
+    ...(options.gpu ? VITEXEC_LOCAL_GPU_BROWSER_ARGS : []),
+    ...(options.browserArgs ?? [])
+  ];
+
+  return args.length > 0 ? args : undefined;
 }
 
 type EnsureChromiumInstalledOptions = {
@@ -873,6 +888,12 @@ async function main(): Promise<void> {
     .description("Run a snippet inside a Vite app and print browser logs.")
     .argument("<code-or-file...>", "literal snippet to run, or a path to a snippet file")
     .option(
+      "--browser-arg <arg>",
+      "extra Chromium launch argument; repeat or set VITEXEC_BROWSER_ARGS as a JSON string array",
+      collectBrowserArg,
+      []
+    )
+    .option(
       "--browser-expose-network <rules>",
       "network rules exposed from this machine to a remote Playwright browser"
     )
@@ -923,8 +944,13 @@ export function createRunOptions(
 ): RunVitexecOptions {
   const env = context.env ?? process.env;
   const timeout = options.timeout ?? envNumber(env, VITEXEC_ENV.timeout, parseTimeoutSeconds);
+  const browserArgs = normalizeBrowserArgs(
+    options.browserArg,
+    envString(env, VITEXEC_ENV.browserArgs)
+  );
 
   return {
+    ...(browserArgs ? { browserArgs } : {}),
     browserExposeNetwork: options.browserExposeNetwork ?? envString(env, VITEXEC_ENV.browserExposeNetwork),
     browserWsEndpoint: options.browserWsEndpoint ?? envString(env, VITEXEC_ENV.browserWsEndpoint),
     configFile: options.config ?? envString(env, VITEXEC_ENV.config),
@@ -939,6 +965,31 @@ export function createRunOptions(
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
     timeoutMs: timeout === undefined ? undefined : timeout * 1000
   };
+}
+
+function collectBrowserArg(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function normalizeBrowserArgs(
+  cliArgs: string[] | undefined,
+  envValue: string | undefined
+): string[] | undefined {
+  if (cliArgs && cliArgs.length > 0) return cliArgs;
+  if (envValue === undefined) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(envValue);
+  } catch {
+    throw new InvalidArgumentError(`${VITEXEC_ENV.browserArgs} must be a JSON string array`);
+  }
+
+  if (!Array.isArray(parsed) || parsed.some((value) => typeof value !== "string")) {
+    throw new InvalidArgumentError(`${VITEXEC_ENV.browserArgs} must be a JSON string array`);
+  }
+
+  return parsed.length > 0 ? parsed : undefined;
 }
 
 function parseTimeoutSeconds(value: string): number {
