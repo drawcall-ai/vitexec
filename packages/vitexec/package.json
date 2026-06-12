@@ -1,20 +1,30 @@
 {
   "name": "vitexec",
-  "version": "0.0.0",
+  "version": "0.1.17",
   "type": "module",
   "description": "Run a snippet inside a live Vite app and get browser logs back.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/drawcall-ai/vitexec",
+    "url": "git+https://github.com/drawcall-ai/vitexec.git",
     "directory": "packages/vitexec"
   },
   "bugs": {
     "url": "https://github.com/drawcall-ai/vitexec/issues"
   },
   "homepage": "https://github.com/drawcall-ai/vitexec#readme",
+  "exports": {
+    ".": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "import": "./dist/client.js"
+    }
+  },
   "bin": {
-    "vitexec": "./dist/cli.js"
+    "vitexec": "dist/cli.js"
   },
   "files": [
     "dist"

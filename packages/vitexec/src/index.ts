@@ -3,6 +3,8 @@ import { normalizePath, type Plugin } from "vite";
 
 const VITEXEC_CODE_ROUTE = "/__vitexec/code";
 const VITEXEC_MODULE_DIR = "/.vitexec/code";
+const VITEXEC_CLIENT_MODULE_ID = "vitexec/client";
+const RESOLVED_VITEXEC_CLIENT_MODULE_ID = "\0vitexec/client";
 
 export type VitexecModuleExtension = ".js" | ".jsx" | ".mjs" | ".mts" | ".ts" | ".tsx";
 
@@ -74,6 +76,69 @@ globalThis.__vitexecRuns[${JSON.stringify(id)}] = import(${JSON.stringify(codeRo
 `;
 }
 
+function clientModuleCode(): string {
+  return `
+function fileValueToBase64(value) {
+  let bytes;
+  if (value instanceof ArrayBuffer) {
+    bytes = new Uint8Array(value);
+  } else if (ArrayBuffer.isView(value)) {
+    bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  } else {
+    throw new TypeError("Expected an ArrayBuffer, typed array, DataView, Blob, string, or JSON value.");
+  }
+
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+async function normalizeFileValue(value) {
+  if (value instanceof Blob) {
+    return {
+      encoding: "base64",
+      data: fileValueToBase64(await value.arrayBuffer())
+    };
+  }
+
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+    return {
+      encoding: "base64",
+      data: fileValueToBase64(value)
+    };
+  }
+
+  if (typeof value === "string") {
+    return {
+      encoding: "utf8",
+      data: value
+    };
+  }
+
+  return {
+    encoding: "utf8",
+    data: JSON.stringify(value, null, 2) + "\\n"
+  };
+}
+
+export async function writeFile(path, value) {
+  if (typeof globalThis.__vitexecWriteFile !== "function") {
+    throw new Error("vitexec writeFile is only available during a vitexec run.");
+  }
+
+  const normalized = await normalizeFileValue(value);
+  return globalThis.__vitexecWriteFile({
+    path,
+    ...normalized
+  });
+}
+`;
+}
+
 export function vitexec(options: VitexecPluginOptions): Plugin {
   let isDevServer = false;
   let base = "/";
@@ -108,12 +173,16 @@ export function vitexec(options: VitexecPluginOptions): Plugin {
       });
     },
     resolveId(id) {
+      if (id === VITEXEC_CLIENT_MODULE_ID) return RESOLVED_VITEXEC_CLIENT_MODULE_ID;
+
       const codeId = codeIdFromUrl(id, base);
       if (codeId === options.id) return resolvedModuleId(root, codeId, moduleExtension);
 
       return undefined;
     },
     load(id) {
+      if (id === RESOLVED_VITEXEC_CLIENT_MODULE_ID) return clientModuleCode();
+
       const codeId = idFromResolvedModuleId(root, id, moduleExtension);
       if (codeId !== options.id) return undefined;
 

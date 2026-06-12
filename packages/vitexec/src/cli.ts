@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, resolve } from "node:path";
+import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
@@ -19,6 +19,9 @@ import {
 } from "playwright";
 import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
+
+export { vitexec };
+export type { VitexecModuleExtension };
 
 declare global {
   var __vitexecRuns: Record<string, Promise<unknown> | undefined>;
@@ -66,6 +69,17 @@ export type RunVitexecOptions = {
   root?: string;
   screenshotPath?: string;
   timeoutMs?: number;
+};
+
+type VitexecWriteFileRequest = {
+  path: string;
+  encoding: "utf8" | "base64";
+  data: string;
+};
+
+type VitexecWriteFileResult = {
+  path: string;
+  bytes: number;
 };
 
 type Environment = Record<string, string | undefined>;
@@ -247,6 +261,11 @@ async function runVitexecInServerTask(
     });
     const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
     await page.exposeFunction("__vitexecReport", injectedCodeFinished.resolve);
+    await page.exposeFunction("__vitexecWriteFile", async (request: VitexecWriteFileRequest) => {
+      const result = await writeVitexecFile(server.config.root, request);
+      log(`[write-file] ${result.path}`);
+      return result;
+    });
 
     const response = await page.goto(url, {
       timeout: timeoutMs,
@@ -771,6 +790,65 @@ function sortNodesBySelfSize(values: HeapNodeSummary[]): HeapNodeSummary[] {
 async function writeJson(path: string, value: unknown): Promise<void> {
   await ensureParentDir(path);
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function writeVitexecFile(
+  root: string,
+  request: VitexecWriteFileRequest
+): Promise<VitexecWriteFileResult> {
+  if (!isVitexecWriteFileRequest(request)) {
+    throw new Error("vitexec writeFile received an invalid request.");
+  }
+
+  const path = safeRootRelativePath(root, request.path);
+  await ensureParentDir(path);
+  const contents =
+    request.encoding === "base64"
+      ? Buffer.from(request.data, "base64")
+      : request.data;
+  await writeFile(path, contents);
+  return {
+    path: request.path,
+    bytes: Buffer.byteLength(contents)
+  };
+}
+
+function isVitexecWriteFileRequest(value: unknown): value is VitexecWriteFileRequest {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "path" in value &&
+    typeof value.path === "string" &&
+    "encoding" in value &&
+    (value.encoding === "utf8" || value.encoding === "base64") &&
+    "data" in value &&
+    typeof value.data === "string"
+  );
+}
+
+function safeRootRelativePath(root: string, path: string): string {
+  if (path.length === 0) {
+    throw new Error("vitexec writeFile path must not be empty.");
+  }
+  if (path.includes("\0")) {
+    throw new Error("vitexec writeFile path must not contain null bytes.");
+  }
+  if (isAbsolute(path)) {
+    throw new Error("vitexec writeFile path must be relative to the Vite root.");
+  }
+
+  const resolvedRoot = resolve(root);
+  const resolvedPath = resolve(resolvedRoot, path);
+  const relativePath = relative(resolvedRoot, resolvedPath);
+  if (
+    relativePath === ".." ||
+    relativePath.startsWith(`..${sep}`) ||
+    isAbsolute(relativePath)
+  ) {
+    throw new Error("vitexec writeFile path cannot escape the Vite root.");
+  }
+
+  return resolvedPath;
 }
 
 function createInjectedCodeCompletion(timeoutMs: number, signal: AbortSignal): {

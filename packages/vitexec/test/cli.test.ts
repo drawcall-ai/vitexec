@@ -167,6 +167,53 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] loaded from ts");
   });
 
+  it("lets injected code write files relative to the Vite root", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        import { writeFile } from "vitexec/client";
+
+        await writeFile("generated/data.json", { ok: true });
+        await writeFile("generated/message.txt", "hello");
+        await writeFile("generated/bytes.bin", new Uint8Array([0, 1, 2, 3]).subarray(1, 3));
+        console.log("files written");
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    await expect(readJson(join(currentProject.root, "generated/data.json"))).resolves.toEqual({
+      ok: true
+    });
+    await expect(readFile(join(currentProject.root, "generated/message.txt"), "utf8")).resolves.toBe(
+      "hello"
+    );
+    await expect(readFile(join(currentProject.root, "generated/bytes.bin"))).resolves.toEqual(
+      Buffer.from([1, 2])
+    );
+    expect(output).toContain("[write-file] generated/data.json");
+    expect(output).toContain("[log] files written");
+  });
+
+  it("rejects vitexec/client writeFile paths outside the Vite root", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+
+    const output = await collectVitexec(
+      `
+        import { writeFile } from "vitexec/client";
+
+        await writeFile("../escape.txt", "nope");
+      `,
+      { configFile: false, root: currentProject.root }
+    );
+
+    expect(output).toContain("vitexec writeFile path cannot escape the Vite root");
+  });
+
   it("captures runtime errors from injected code", async () => {
     currentProject = await createTempViteProject({
       "index.html": "<main>ready</main>"
