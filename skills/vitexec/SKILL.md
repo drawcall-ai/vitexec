@@ -51,3 +51,15 @@ vitexec --path /cart '
 - If repeated runs need the same endpoint or artifact settings, prefer `VITEXEC_*` environment variables over repeating long flags.
 - Use screenshots or recordings only when visual evidence matters.
 - Do not leave temporary code in the app when `vitexec` can inspect it from outside.
+
+## Reading a screenshot as proof
+
+A screenshot is only proof if you read it critically — "something rendered" is not "it works and looks right". When the evidence is a screenshot or clip, look at it for tells of unfinished work and treat any you find as a defect to fix, not as proof of done:
+
+- A character standing in a **T-pose** (or not animating) — its rig/animation isn't driving the model.
+- **Flat solid-color boxes/planes** standing in for real objects — placeholder geometry that needs a real asset or material.
+- **Untextured surfaces** (a flat-color ground, gray "clay") — missing materials.
+- Objects that **float** with no contact shadow — missing shadows or grounding.
+- A **flat, raw render** with no finishing pass.
+
+Pair the picture with state assertions: confirm the player-visible *outcome* from real app state (the count changed, the entity was removed, the animation state advanced), not just that the frame drew.
