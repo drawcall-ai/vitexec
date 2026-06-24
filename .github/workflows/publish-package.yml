@@ -58,6 +58,16 @@ jobs:
       - name: Copy README
         run: cp README.md packages/vitexec/README.md
 
+      # The vitexec skill lives at the monorepo root (single source of truth). Copy it into the
+      # package so it ships inside the published tarball — create installs it from node_modules
+      # instead of cloning GitHub. Kept out of git via .gitignore; included via the "skills"
+      # entry in packages/vitexec/package.json "files".
+      - name: Copy skill into package
+        run: |
+          rm -rf packages/vitexec/skills
+          mkdir -p packages/vitexec/skills
+          cp -R skills/vitexec packages/vitexec/skills/vitexec
+
       - name: Publish vitexec
         working-directory: ./packages/vitexec
         run: npm publish --access public --provenance --tag latest
