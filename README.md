@@ -105,6 +105,7 @@ vitexec --gpu --path /scene ./vitexec/check-scene.ts
 | `--network-trace ./network.har` | Capture network requests as HAR |
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
 | `--heap-snapshot ./heap.json` | Capture a jq-friendly decoded heap snapshot |
+| `--keep-browser-open` | Leave a `--browser-ws-endpoint` browser running after the run |
 | `--timeout 30` | Set the maximum wait time |
 
 ## Environment Variables
@@ -125,7 +126,37 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_NETWORK_TRACE` | `--network-trace` |
 | `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
 | `VITEXEC_HEAP_SNAPSHOT` | `--heap-snapshot` |
+| `VITEXEC_KEEP_BROWSER_OPEN` | `--keep-browser-open` |
 
 When `--browser-ws-endpoint` is set, vitexec only sends browser-generic
 GPU/WebGPU launch flags. Start the remote Playwright server with any
 host-specific GPU policy that matches its platform.
+
+## Run inside a browser you already have
+
+By default vitexec launches its own Chromium. When you call it programmatically
+you can instead hand it a Playwright `browser`, `context`, or `page` you already
+own — the snippet runs in **that** browser with no second window. This is ideal
+when a dev server already opens a visible, instrumented tab (e.g. a WebXR
+emulator) and you want to watch the check run live in it.
+
+```ts
+import { runVitexec } from "vitexec";
+
+// Reuse a page you own. vitexec navigates it to its own per-run URL, runs the
+// snippet, and never closes it — safe to reuse across many sequential runs.
+for await (const line of runVitexec(code, { root, page })) console.log(line);
+
+runVitexec(code, { root, context }); // open a fresh page in this context
+runVitexec(code, { root, browser }); // open a fresh context + page in this browser
+```
+
+vitexec only ever closes handles it created itself: an adopted `page` is left
+open, an adopted `context` keeps its own pages (vitexec closes just the page it
+opened), and an adopted `browser` keeps running (vitexec closes just the context
+it opened). Its own Vite server is always closed. `--record` and
+`--network-trace` need a vitexec-created context, so they are skipped for an
+adopted page or context.
+
+On the `--browser-ws-endpoint` path, pass `keepBrowserOpen` (or
+`--keep-browser-open`) to leave a `launchServer` browser running between runs.

@@ -13,6 +13,7 @@ import {
   type BrowserContext,
   type CDPSession,
   type ConsoleMessage,
+  type Frame,
   type Page,
   type Request,
   type Response
@@ -42,7 +43,8 @@ export const VITEXEC_ENV = {
   performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
   record: "VITEXEC_RECORD",
   screenshot: "VITEXEC_SCREENSHOT",
-  timeout: "VITEXEC_TIMEOUT"
+  timeout: "VITEXEC_TIMEOUT",
+  keepBrowserOpen: "VITEXEC_KEEP_BROWSER_OPEN"
 } as const;
 export const VITEXEC_LOCAL_GPU_BROWSER_ARGS = [
   "--enable-gpu",
@@ -69,6 +71,29 @@ export type RunVitexecOptions = {
   root?: string;
   screenshotPath?: string;
   timeoutMs?: number;
+  /**
+   * Run inside a browser you already own instead of launching one. vitexec opens
+   * a fresh context + page in it and never closes the browser (only that context).
+   */
+  browser?: Browser;
+  /**
+   * Run inside a context you already own. vitexec opens a fresh page in it and
+   * closes only that page — never the context or its browser.
+   */
+  context?: BrowserContext;
+  /**
+   * Run inside a page you already own — e.g. a dev server's visible managed tab.
+   * vitexec navigates it to its own per-run URL, runs the snippet, and never
+   * closes the page/context/browser. The same page may be reused across runs.
+   * Same-process only: a Page is a live RPC proxy bound to its owning process.
+   */
+  page?: Page;
+  /**
+   * Leave a launched or connected browser running after the run, e.g. to reuse a
+   * `--browser-ws-endpoint` server across runs. Adopting a browser/context/page
+   * already keeps it open; vitexec always closes its own Vite server regardless.
+   */
+  keepBrowserOpen?: boolean;
 };
 
 type VitexecWriteFileRequest = {
@@ -81,6 +106,39 @@ type VitexecWriteFileResult = {
   path: string;
   bytes: number;
 };
+
+// Playwright forbids re-exposing a function on a page, but a caller may hand the
+// same page to several sequential runs. So the `__vitexecReport` / `__vitexecWriteFile`
+// bindings are exposed once per page and routed to the *current* run's handlers —
+// which also keeps each run's file writes pointed at its own Vite root. A fresh
+// page vitexec created and will close is simply exposed once and never reused.
+type PageRunBridge = {
+  onReport: () => void;
+  writeFile: (request: VitexecWriteFileRequest) => Promise<VitexecWriteFileResult>;
+};
+
+const pageBridges = new WeakMap<Page, { current: PageRunBridge | undefined }>();
+
+async function attachPageRunBridge(page: Page, bridge: PageRunBridge): Promise<() => void> {
+  let holder = pageBridges.get(page);
+  if (!holder) {
+    holder = { current: bridge };
+    pageBridges.set(page, holder);
+    const bound = holder;
+    await page.exposeFunction("__vitexecReport", () => bound.current?.onReport());
+    await page.exposeFunction("__vitexecWriteFile", (request: VitexecWriteFileRequest) => {
+      if (!bound.current) throw new Error("vitexec writeFile called outside a run.");
+      return bound.current.writeFile(request);
+    });
+  } else {
+    holder.current = bridge;
+  }
+
+  const bound = holder;
+  return () => {
+    if (bound.current === bridge) bound.current = undefined;
+  };
+}
 
 type Environment = Record<string, string | undefined>;
 
@@ -98,6 +156,7 @@ type CliOptions = {
   record?: string;
   screenshot?: string;
   timeout?: number;
+  keepBrowserOpen?: boolean;
 };
 
 export async function* runVitexec(
@@ -206,12 +265,16 @@ async function runVitexecInServerTask(
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? VITEXEC_TIMEOUT_MS;
   const url = buildServerPageUrl(server, options.path);
-  let browser: Browser | undefined;
-  let context: BrowserContext | undefined;
-  let page: Page | undefined;
+  const keepBrowserOpen = options.keepBrowserOpen ?? false;
+  let target: BrowserTarget | undefined;
   let cdp: CDPSession | undefined;
+  let detachBridge: (() => void) | undefined;
   let performanceTrace: PerformanceTraceCapture | undefined;
-  const closeBrowser = () => void browser?.close().catch(() => undefined);
+  // Force-close a browser we launched if we are aborted mid-navigation; adopted
+  // handles are never closed here, and `keepBrowserOpen` leaves ours running.
+  const closeOwnedBrowser = () => {
+    if (target?.ownsBrowser && !keepBrowserOpen) void target.browser?.close().catch(() => undefined);
+  };
 
   const pendingConsoleLogs = new Set<Promise<void>>();
   const collectConsoleLog = (message: ConsoleMessage) => {
@@ -219,22 +282,27 @@ async function runVitexecInServerTask(
     pendingConsoleLogs.add(pendingLog);
     pendingLog.finally(() => pendingConsoleLogs.delete(pendingLog));
   };
+  let hasMainFrameNavigated = false;
+  const onPageError = (error: Error) => log(`[page error] ${error.message}`);
+  const onRequestFailed = (request: Request) => log(formatRequestFailure(request));
+  const onResponse = (response: Response) => {
+    if (response.status() >= 400) log(formatHttpError(response));
+  };
+  const onFrameNavigated = (frame: Frame) => {
+    if (frame !== target?.page.mainFrame()) return;
+    if (hasMainFrameNavigated) log(`[navigation] navigated ${frame.url()}`);
+    hasMainFrameNavigated = true;
+  };
   try {
-    browser = await launchBrowser(options, log);
-    signal.addEventListener("abort", closeBrowser, { once: true });
+    target = await acquireBrowserTarget(options, log);
+    if (target.ownsBrowser) signal.addEventListener("abort", closeOwnedBrowser, { once: true });
     if (signal.aborted) return;
+    const { page, context } = target;
 
-    if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
-    context = await browser.newContext({
-      ignoreHTTPSErrors: true,
-      ...(options.networkTracePath && !signal.aborted
-        ? { recordHar: { path: options.networkTracePath } }
-        : {}),
-      ...(options.recordPath && !signal.aborted
-        ? { recordVideo: { dir: dirname(options.recordPath) } }
-        : {})
-    });
-    page = await context.newPage();
+    if (!target.ownsContext && (options.networkTracePath || options.recordPath)) {
+      log("[skipped] --record / --network-trace need a vitexec-created context; ignored for an adopted page/context");
+    }
+
     cdp = await context.newCDPSession(page);
     if (options.cpuProfilePath) {
       await cdp.send("Profiler.enable");
@@ -246,25 +314,19 @@ async function runVitexecInServerTask(
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(timeoutMs);
     page.on("console", collectConsoleLog);
-    page.on("pageerror", (error) => log(`[page error] ${error.message}`));
-    page.on("requestfailed", (request) => log(formatRequestFailure(request)));
-    page.on("response", (response) => {
-      if (response.status() >= 400) log(formatHttpError(response));
-    });
-    let hasMainFrameNavigated = false;
-    page.on("framenavigated", (frame) => {
-      if (frame !== page?.mainFrame()) return;
-      if (hasMainFrameNavigated) {
-        log(`[navigation] navigated ${frame.url()}`);
-      }
-      hasMainFrameNavigated = true;
-    });
+    page.on("pageerror", onPageError);
+    page.on("requestfailed", onRequestFailed);
+    page.on("response", onResponse);
+    page.on("framenavigated", onFrameNavigated);
+
     const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
-    await page.exposeFunction("__vitexecReport", injectedCodeFinished.resolve);
-    await page.exposeFunction("__vitexecWriteFile", async (request: VitexecWriteFileRequest) => {
-      const result = await writeVitexecFile(server.config.root, request);
-      log(`[write-file] ${result.path}`);
-      return result;
+    detachBridge = await attachPageRunBridge(page, {
+      onReport: injectedCodeFinished.resolve,
+      writeFile: async (request) => {
+        const result = await writeVitexecFile(server.config.root, request);
+        log(`[write-file] ${result.path}`);
+        return result;
+      }
     });
 
     const response = await page.goto(url, {
@@ -300,14 +362,25 @@ async function runVitexecInServerTask(
         await saveHeapSnapshotSummary(cdp, options.heapSnapshotPath);
         log(`[heap-snapshot] ${options.heapSnapshotPath}`);
       }
-      if (page && options.recordPath && !signal.aborted) {
-        await saveRecording(page, options.recordPath);
+      if (target?.ownsContext && options.recordPath && !signal.aborted) {
+        await saveRecording(target.page, options.recordPath);
         log(`[recording] ${options.recordPath}`);
       }
     } finally {
-      signal.removeEventListener("abort", closeBrowser);
-      if (context) {
-        await context.close().then(
+      signal.removeEventListener("abort", closeOwnedBrowser);
+      if (target) {
+        // Detach only our own listeners/bridge so a reused adopted page does not
+        // accumulate handlers across runs; the caller's listeners are untouched.
+        detachBridge?.();
+        target.page.off("console", collectConsoleLog);
+        target.page.off("pageerror", onPageError);
+        target.page.off("requestfailed", onRequestFailed);
+        target.page.off("response", onResponse);
+        target.page.off("framenavigated", onFrameNavigated);
+      }
+      if (cdp) await cdp.detach().catch(() => undefined);
+      if (target?.ownsContext) {
+        await target.context.close().then(
           () => {
             if (options.networkTracePath && !signal.aborted) {
               log(`[network-trace] ${options.networkTracePath}`);
@@ -315,8 +388,12 @@ async function runVitexecInServerTask(
           },
           () => undefined
         );
+      } else if (target?.ownsPage) {
+        await target.page.close().catch(() => undefined);
       }
-      await browser?.close().catch(() => undefined);
+      if (target?.ownsBrowser && !keepBrowserOpen) {
+        await target.browser?.close().catch(() => undefined);
+      }
     }
   }
 }
@@ -396,6 +473,69 @@ async function launchBrowser(
   return chromium.launch({
     channel: "chromium",
     args: createBrowserArgs(options)
+  });
+}
+
+type BrowserTarget = {
+  browser: Browser | undefined;
+  context: BrowserContext;
+  page: Page;
+  ownsContext: boolean;
+  ownsPage: boolean;
+  ownsBrowser: boolean;
+};
+
+// Acquire the page vitexec will drive, tracking exactly which handles it created.
+// Anything the caller provided (page/context/browser) is reused and left open;
+// vitexec only ever tears down what it made itself.
+async function acquireBrowserTarget(
+  options: RunVitexecOptions,
+  log: (line: string) => void
+): Promise<BrowserTarget> {
+  if (options.page) {
+    const context = options.page.context();
+    return {
+      browser: context.browser() ?? undefined,
+      context,
+      page: options.page,
+      ownsContext: false,
+      ownsPage: false,
+      ownsBrowser: false
+    };
+  }
+
+  if (options.context) {
+    return {
+      browser: options.context.browser() ?? undefined,
+      context: options.context,
+      page: await options.context.newPage(),
+      ownsContext: false,
+      ownsPage: true,
+      ownsBrowser: false
+    };
+  }
+
+  const browser = options.browser ?? (await launchBrowser(options, log));
+  const context = await createRunContext(browser, options);
+  return {
+    browser,
+    context,
+    page: await context.newPage(),
+    ownsContext: true,
+    ownsPage: true,
+    ownsBrowser: options.browser === undefined
+  };
+}
+
+async function createRunContext(
+  browser: Browser,
+  options: RunVitexecOptions
+): Promise<BrowserContext> {
+  if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
+  return browser.newContext({
+    ignoreHTTPSErrors: true,
+    ...(options.networkTracePath ? { recordHar: { path: options.networkTracePath } } : {}),
+    ...(options.recordPath ? { recordVideo: { dir: dirname(options.recordPath) } } : {})
   });
 }
 
@@ -988,6 +1128,7 @@ async function main(): Promise<void> {
       "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
     )
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
+    .option("--keep-browser-open", "leave a --browser-ws-endpoint browser running after the code finishes")
     .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
     .showHelpAfterError()
     .parse();
@@ -1041,6 +1182,7 @@ export function createRunOptions(
     performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
     recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
+    keepBrowserOpen: options.keepBrowserOpen ?? envBoolean(env, VITEXEC_ENV.keepBrowserOpen),
     timeoutMs: timeout === undefined ? undefined : timeout * 1000
   };
 }

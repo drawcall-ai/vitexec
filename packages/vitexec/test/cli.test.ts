@@ -4,6 +4,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
@@ -870,6 +871,92 @@ describe("vitexec CLI runner", () => {
     );
 
     expect(output).toContain("[log] remote text remote");
+  });
+
+  it("runs in an adopted page and leaves it (and its browser) open", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>adopt</main>" });
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      await page.goto("about:blank");
+
+      const output = await collectVitexec(
+        "console.log('adopted', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, page }
+      );
+
+      expect(output).toContain("[log] adopted adopt");
+      expect(page.isClosed()).toBe(false);
+      expect(browser.isConnected()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("reuses one adopted page across sequential runs, each writing its own root", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>reuse</main>" });
+    const second = await createTempViteProject({ "index.html": "<main>reuse</main>" });
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      await page.goto("about:blank");
+
+      const first = await collectVitexec(
+        "import { writeFile } from 'vitexec/client'; await writeFile('run-1.txt', 'one'); console.log('run-1')",
+        { configFile: false, root: currentProject.root, page }
+      );
+      // A second run on the same page must not throw "function already registered",
+      // and its writeFile must land in the second run's root — not the first's.
+      const secondOut = await collectVitexec(
+        "import { writeFile } from 'vitexec/client'; await writeFile('run-2.txt', 'two'); console.log('run-2')",
+        { configFile: false, root: second.root, page }
+      );
+
+      expect(first).toContain("[log] run-1");
+      expect(secondOut).toContain("[log] run-2");
+      expect(await readFile(join(currentProject.root, "run-1.txt"), "utf8")).toBe("one");
+      expect(await readFile(join(second.root, "run-2.txt"), "utf8")).toBe("two");
+      expect(page.isClosed()).toBe(false);
+    } finally {
+      await browser.close();
+      await second.close();
+    }
+  });
+
+  it("adopts a context (fresh page inside it) and closes only that page", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>ctx</main>" });
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext({ ignoreHTTPSErrors: true });
+      const preexisting = await context.newPage();
+
+      const output = await collectVitexec(
+        "console.log('ctx', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, context }
+      );
+
+      expect(output).toContain("[log] ctx ctx");
+      expect(browser.isConnected()).toBe(true);
+      expect(preexisting.isClosed()).toBe(false);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("adopts a browser (fresh context + page) and leaves the browser open", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>br</main>" });
+    const browser = await chromium.launch();
+    try {
+      const output = await collectVitexec(
+        "console.log('br', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, browser }
+      );
+
+      expect(output).toContain("[log] br br");
+      expect(browser.isConnected()).toBe(true);
+    } finally {
+      await browser.close();
+    }
   });
 
   it("sends generic GPU launch options to remote Playwright browser servers", () => {
