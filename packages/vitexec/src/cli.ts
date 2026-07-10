@@ -16,7 +16,8 @@ import {
   type Frame,
   type Page,
   type Request,
-  type Response
+  type Response,
+  type ViewportSize
 } from "playwright";
 import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
@@ -44,7 +45,7 @@ export const VITEXEC_ENV = {
   record: "VITEXEC_RECORD",
   screenshot: "VITEXEC_SCREENSHOT",
   timeout: "VITEXEC_TIMEOUT",
-  keepBrowserOpen: "VITEXEC_KEEP_BROWSER_OPEN"
+  viewport: "VITEXEC_VIEWPORT"
 } as const;
 export const VITEXEC_LOCAL_GPU_BROWSER_ARGS = [
   "--enable-gpu",
@@ -71,6 +72,8 @@ export type RunVitexecOptions = {
   root?: string;
   screenshotPath?: string;
   timeoutMs?: number;
+  /** Browser viewport as "WIDTHxHEIGHT" (e.g. "390x844" for a phone). Defaults to Playwright's 1280x720. */
+  viewport?: string;
   /**
    * Run inside a browser you already own instead of launching one. vitexec opens
    * a fresh context + page in it and never closes the browser (only that context).
@@ -88,12 +91,6 @@ export type RunVitexecOptions = {
    * Same-process only: a Page is a live RPC proxy bound to its owning process.
    */
   page?: Page;
-  /**
-   * Leave a launched or connected browser running after the run, e.g. to reuse a
-   * `--browser-ws-endpoint` server across runs. Adopting a browser/context/page
-   * already keeps it open; vitexec always closes its own Vite server regardless.
-   */
-  keepBrowserOpen?: boolean;
 };
 
 type VitexecWriteFileRequest = {
@@ -117,27 +114,27 @@ type PageRunBridge = {
   writeFile: (request: VitexecWriteFileRequest) => Promise<VitexecWriteFileResult>;
 };
 
-const pageBridges = new WeakMap<Page, { current: PageRunBridge | undefined }>();
+type PageBridgeHolder = { current: PageRunBridge | undefined };
+
+const pageBridges = new WeakMap<Page, PageBridgeHolder>();
 
 async function attachPageRunBridge(page: Page, bridge: PageRunBridge): Promise<() => void> {
-  let holder = pageBridges.get(page);
-  if (!holder) {
-    holder = { current: bridge };
-    pageBridges.set(page, holder);
-    const bound = holder;
-    await page.exposeFunction("__vitexecReport", () => bound.current?.onReport());
-    await page.exposeFunction("__vitexecWriteFile", (request: VitexecWriteFileRequest) => {
-      if (!bound.current) throw new Error("vitexec writeFile called outside a run.");
-      return bound.current.writeFile(request);
-    });
-  } else {
-    holder.current = bridge;
-  }
-
-  const bound = holder;
+  const holder = pageBridges.get(page) ?? (await exposePageBridge(page));
+  holder.current = bridge;
   return () => {
-    if (bound.current === bridge) bound.current = undefined;
+    if (holder.current === bridge) holder.current = undefined;
   };
+}
+
+async function exposePageBridge(page: Page): Promise<PageBridgeHolder> {
+  const holder: PageBridgeHolder = { current: undefined };
+  pageBridges.set(page, holder);
+  await page.exposeFunction("__vitexecReport", () => holder.current?.onReport());
+  await page.exposeFunction("__vitexecWriteFile", (request: VitexecWriteFileRequest) => {
+    if (!holder.current) throw new Error("vitexec writeFile called outside a run.");
+    return holder.current.writeFile(request);
+  });
+  return holder;
 }
 
 type Environment = Record<string, string | undefined>;
@@ -155,8 +152,8 @@ type CliOptions = {
   performanceTrace?: string;
   record?: string;
   screenshot?: string;
+  viewport?: string;
   timeout?: number;
-  keepBrowserOpen?: boolean;
 };
 
 export async function* runVitexec(
@@ -265,15 +262,14 @@ async function runVitexecInServerTask(
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? VITEXEC_TIMEOUT_MS;
   const url = buildServerPageUrl(server, options.path);
-  const keepBrowserOpen = options.keepBrowserOpen ?? false;
   let target: BrowserTarget | undefined;
   let cdp: CDPSession | undefined;
   let detachBridge: (() => void) | undefined;
   let performanceTrace: PerformanceTraceCapture | undefined;
   // Force-close a browser we launched if we are aborted mid-navigation; adopted
-  // handles are never closed here, and `keepBrowserOpen` leaves ours running.
+  // handles belong to the caller and are never closed here.
   const closeOwnedBrowser = () => {
-    if (target?.ownsBrowser && !keepBrowserOpen) void target.browser?.close().catch(() => undefined);
+    if (target?.ownsBrowser) void target.browser?.close().catch(() => undefined);
   };
 
   const pendingConsoleLogs = new Set<Promise<void>>();
@@ -329,10 +325,7 @@ async function runVitexecInServerTask(
       }
     });
 
-    const response = await page.goto(url, {
-      timeout: timeoutMs,
-      waitUntil: "load"
-    });
+    const response = await navigateRunPage(page, url, timeoutMs);
     if (!response) log("[navigation] no response");
     if (response && !response.ok()) {
       log(`[navigation] ${response.status()} ${response.statusText()} ${response.url()}`);
@@ -391,11 +384,33 @@ async function runVitexecInServerTask(
       } else if (target?.ownsPage) {
         await target.page.close().catch(() => undefined);
       }
-      if (target?.ownsBrowser && !keepBrowserOpen) {
+      if (target?.ownsBrowser) {
         await target.browser?.close().catch(() => undefined);
       }
     }
   }
+}
+
+// An adopted page reused across runs still shows the previous run's document,
+// whose Vite server has since closed. Navigating away cancels that orphaned
+// document's now-failing requests, which Chromium can surface as a one-off
+// net::ERR_ABORTED on the new navigation. Retry that exact case once; the second
+// attempt starts clean. A genuine navigation failure still throws both times.
+async function navigateRunPage(
+  page: Page,
+  url: string,
+  timeoutMs: number
+): Promise<Response | null> {
+  try {
+    return await page.goto(url, { timeout: timeoutMs, waitUntil: "load" });
+  } catch (error) {
+    if (!isAbortedNavigationError(error)) throw error;
+    return page.goto(url, { timeout: timeoutMs, waitUntil: "load" });
+  }
+}
+
+function isAbortedNavigationError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("net::ERR_ABORTED");
 }
 
 async function startViteServer(
@@ -492,6 +507,11 @@ async function acquireBrowserTarget(
   options: RunVitexecOptions,
   log: (line: string) => void
 ): Promise<BrowserTarget> {
+  // Validate the viewport before launching anything, so a bad value fails fast
+  // instead of leaking a just-launched browser. It only applies to contexts we
+  // create; an adopted page/context keeps its own viewport.
+  const viewport = parseViewport(options.viewport);
+
   if (options.page) {
     const context = options.page.context();
     return {
@@ -516,7 +536,7 @@ async function acquireBrowserTarget(
   }
 
   const browser = options.browser ?? (await launchBrowser(options, log));
-  const context = await createRunContext(browser, options);
+  const context = await createRunContext(browser, viewport, options);
   return {
     browser,
     context,
@@ -529,14 +549,25 @@ async function acquireBrowserTarget(
 
 async function createRunContext(
   browser: Browser,
+  viewport: ViewportSize | null,
   options: RunVitexecOptions
 ): Promise<BrowserContext> {
   if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
   return browser.newContext({
     ignoreHTTPSErrors: true,
+    ...(viewport ? { viewport } : {}),
     ...(options.networkTracePath ? { recordHar: { path: options.networkTracePath } } : {}),
     ...(options.recordPath ? { recordVideo: { dir: dirname(options.recordPath) } } : {})
   });
+}
+
+// "390x844" -> { width: 390, height: 844 }. Throws on a malformed value rather than silently
+// falling back to the default, so a bad --viewport surfaces instead of testing the wrong size.
+function parseViewport(value: string | undefined): ViewportSize | null {
+  if (!value) return null;
+  const match = /^(\d+)x(\d+)$/.exec(value.trim());
+  if (!match) throw new Error(`invalid --viewport "${value}" — expected WIDTHxHEIGHT, e.g. 390x844`);
+  return { width: Number(match[1]), height: Number(match[2]) };
 }
 
 export function createRemoteBrowserHeaders(
@@ -1128,7 +1159,7 @@ async function main(): Promise<void> {
       "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
     )
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
-    .option("--keep-browser-open", "leave a --browser-ws-endpoint browser running after the code finishes")
+    .option("--viewport <WIDTHxHEIGHT>", "browser viewport, e.g. 390x844 for a phone (default 1280x720)")
     .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
     .showHelpAfterError()
     .parse();
@@ -1182,7 +1213,7 @@ export function createRunOptions(
     performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
     recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
-    keepBrowserOpen: options.keepBrowserOpen ?? envBoolean(env, VITEXEC_ENV.keepBrowserOpen),
+    viewport: options.viewport ?? envString(env, VITEXEC_ENV.viewport),
     timeoutMs: timeout === undefined ? undefined : timeout * 1000
   };
 }

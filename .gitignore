@@ -1,5 +1,6 @@
 node_modules/
 dist/
 artifacts
+.DS_Store
 # Transient copy of the root skill into the published package (made by CI before publish).
 packages/vitexec/skills

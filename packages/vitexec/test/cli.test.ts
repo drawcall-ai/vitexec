@@ -959,6 +959,29 @@ describe("vitexec CLI runner", () => {
     }
   });
 
+  it("opens the launched browser at a custom --viewport", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>vp</main>" });
+
+    const output = await collectVitexec(
+      "console.log('viewport', `${window.innerWidth}x${window.innerHeight}`)",
+      { configFile: false, root: currentProject.root, viewport: "390x844" }
+    );
+
+    expect(output).toContain("[log] viewport 390x844");
+  });
+
+  it("rejects a malformed --viewport instead of silently using the default", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>vp</main>" });
+
+    await expect(
+      collectVitexec("console.log('unreached')", {
+        configFile: false,
+        root: currentProject.root,
+        viewport: "not-a-size"
+      })
+    ).rejects.toThrow(/invalid --viewport/);
+  });
+
   it("sends generic GPU launch options to remote Playwright browser servers", () => {
     expect(createRemoteBrowserHeaders({ gpu: false })).toBeUndefined();
 

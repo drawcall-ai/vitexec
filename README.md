@@ -105,7 +105,7 @@ vitexec --gpu --path /scene ./vitexec/check-scene.ts
 | `--network-trace ./network.har` | Capture network requests as HAR |
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
 | `--heap-snapshot ./heap.json` | Capture a jq-friendly decoded heap snapshot |
-| `--keep-browser-open` | Leave a `--browser-ws-endpoint` browser running after the run |
+| `--viewport 390x844` | Set the browser viewport (default 1280x720) |
 | `--timeout 30` | Set the maximum wait time |
 
 ## Environment Variables
@@ -126,7 +126,7 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_NETWORK_TRACE` | `--network-trace` |
 | `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
 | `VITEXEC_HEAP_SNAPSHOT` | `--heap-snapshot` |
-| `VITEXEC_KEEP_BROWSER_OPEN` | `--keep-browser-open` |
+| `VITEXEC_VIEWPORT` | `--viewport` |
 
 When `--browser-ws-endpoint` is set, vitexec only sends browser-generic
 GPU/WebGPU launch flags. Start the remote Playwright server with any
@@ -158,5 +158,6 @@ it opened). Its own Vite server is always closed. `--record` and
 `--network-trace` need a vitexec-created context, so they are skipped for an
 adopted page or context.
 
-On the `--browser-ws-endpoint` path, pass `keepBrowserOpen` (or
-`--keep-browser-open`) to leave a `launchServer` browser running between runs.
+This is also how you reuse one browser across many runs: connect or launch it
+once yourself and pass it in — vitexec never closes what it did not create. (The
+CLI has no flag for this; adoption is a programmatic-only capability.)
