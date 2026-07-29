@@ -970,6 +970,17 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] viewport 390x844");
   });
 
+  it("can emulate touch input", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>touch</main>" });
+
+    const output = await collectVitexec(
+      "console.log('touch', navigator.maxTouchPoints, matchMedia('(pointer: coarse)').matches)",
+      { configFile: false, root: currentProject.root, touch: true }
+    );
+
+    expect(output).toContain("[log] touch 1 true");
+  });
+
   it("rejects a malformed --viewport instead of silently using the default", async () => {
     currentProject = await createTempViteProject({ "index.html": "<main>vp</main>" });
 

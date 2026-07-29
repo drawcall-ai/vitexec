@@ -44,6 +44,7 @@ export const VITEXEC_ENV = {
   performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
   record: "VITEXEC_RECORD",
   screenshot: "VITEXEC_SCREENSHOT",
+  touch: "VITEXEC_TOUCH",
   timeout: "VITEXEC_TIMEOUT",
   viewport: "VITEXEC_VIEWPORT"
 } as const;
@@ -72,6 +73,8 @@ export type RunVitexecOptions = {
   root?: string;
   screenshotPath?: string;
   timeoutMs?: number;
+  /** Enable touch input and a coarse pointer in contexts Vitexec creates. */
+  touch?: boolean;
   /** Browser viewport as "WIDTHxHEIGHT" (e.g. "390x844" for a phone). Defaults to Playwright's 1280x720. */
   viewport?: string;
   /**
@@ -152,6 +155,7 @@ type CliOptions = {
   performanceTrace?: string;
   record?: string;
   screenshot?: string;
+  touch?: boolean;
   viewport?: string;
   timeout?: number;
 };
@@ -555,6 +559,7 @@ async function createRunContext(
   if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
   return browser.newContext({
     ignoreHTTPSErrors: true,
+    hasTouch: options.touch,
     ...(viewport ? { viewport } : {}),
     ...(options.networkTracePath ? { recordHar: { path: options.networkTracePath } } : {}),
     ...(options.recordPath ? { recordVideo: { dir: dirname(options.recordPath) } } : {})
@@ -1159,6 +1164,7 @@ async function main(): Promise<void> {
       "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
     )
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
+    .option("--touch", "emulate touch input and a coarse pointer")
     .option("--viewport <WIDTHxHEIGHT>", "browser viewport, e.g. 390x844 for a phone (default 1280x720)")
     .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
     .showHelpAfterError()
@@ -1213,6 +1219,7 @@ export function createRunOptions(
     performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
     recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
+    touch: options.touch ?? envBoolean(env, VITEXEC_ENV.touch),
     viewport: options.viewport ?? envString(env, VITEXEC_ENV.viewport),
     timeoutMs: timeout === undefined ? undefined : timeout * 1000
   };
