@@ -19,14 +19,18 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 
 1. Identify the page path if it is not `/`.
 2. Write the smallest snippet that performs the user-like action or reads the browser-only state.
-3. Run `vitexec '<snippet>'`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--cpu-profile`, `--network-trace`, `--performance-trace`, `--heap-snapshot`, `--timeout`, or `--config` only when needed.
+3. Run `vitexec '<snippet>'` or `vitexec check.ts` for `./vitexec/check.ts`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--cpu-profile`, `--network-trace`, `--performance-trace`, `--heap-snapshot`, `--timeout`, or `--config` only when needed.
 4. Treat stdout as browser logs. It starts with `logs:`.
 
 If `vitexec` itself is missing, install `vitexec` with the package manager already used by the project.
 
 ```sh
 vitexec 'console.log("ready")'
+vitexec check-scene.ts
 ```
+
+For one argument, the CLI checks the path as written, then checks it below
+`./vitexec`, then treats it as inline code.
 
 For structured state, log JSON:
 
@@ -51,6 +55,27 @@ vitexec --path /cart '
 - If repeated runs need the same endpoint or artifact settings, prefer `VITEXEC_*` environment variables over repeating long flags.
 - Use screenshots or recordings only when visual evidence matters.
 - Do not leave temporary code in the app when `vitexec` can inspect it from outside.
+
+## Project integration
+
+A Vite app can add `vitexec()` from the `vitexec` package. The plugin maps each
+top-level module in `./vitexec` to a page with the same name:
+
+```ts
+import { vitexec } from "vitexec";
+
+export default {
+  plugins: [vitexec()]
+};
+```
+
+```txt
+vitexec/smoke.ts → /smoke.html
+```
+
+The mapping works in the Vite dev server and in `vite build`. Each generated page
+loads the normal `index.html` and then its vitexec script. Multiple `vitexec()`
+declarations are safe and deduplicated; conflicting page mappings fail clearly.
 
 ## Reading a screenshot as proof
 

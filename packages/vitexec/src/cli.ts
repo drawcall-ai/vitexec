@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, extname, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
@@ -22,12 +22,7 @@ import {
 import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
 
-export { vitexec };
 export type { VitexecModuleExtension };
-
-declare global {
-  var __vitexecRuns: Record<string, Promise<unknown> | undefined>;
-}
 
 export const VITEXEC_TIMEOUT_MS = 10 * 60 * 1000;
 export const VITEXEC_DEFAULT_REMOTE_EXPOSE_NETWORK = "<loopback>";
@@ -96,50 +91,6 @@ export type RunVitexecOptions = {
   page?: Page;
 };
 
-type VitexecWriteFileRequest = {
-  path: string;
-  encoding: "utf8" | "base64";
-  data: string;
-};
-
-type VitexecWriteFileResult = {
-  path: string;
-  bytes: number;
-};
-
-// Playwright forbids re-exposing a function on a page, but a caller may hand the
-// same page to several sequential runs. So the `__vitexecReport` / `__vitexecWriteFile`
-// bindings are exposed once per page and routed to the *current* run's handlers —
-// which also keeps each run's file writes pointed at its own Vite root. A fresh
-// page vitexec created and will close is simply exposed once and never reused.
-type PageRunBridge = {
-  onReport: () => void;
-  writeFile: (request: VitexecWriteFileRequest) => Promise<VitexecWriteFileResult>;
-};
-
-type PageBridgeHolder = { current: PageRunBridge | undefined };
-
-const pageBridges = new WeakMap<Page, PageBridgeHolder>();
-
-async function attachPageRunBridge(page: Page, bridge: PageRunBridge): Promise<() => void> {
-  const holder = pageBridges.get(page) ?? (await exposePageBridge(page));
-  holder.current = bridge;
-  return () => {
-    if (holder.current === bridge) holder.current = undefined;
-  };
-}
-
-async function exposePageBridge(page: Page): Promise<PageBridgeHolder> {
-  const holder: PageBridgeHolder = { current: undefined };
-  pageBridges.set(page, holder);
-  await page.exposeFunction("__vitexecReport", () => holder.current?.onReport());
-  await page.exposeFunction("__vitexecWriteFile", (request: VitexecWriteFileRequest) => {
-    if (!holder.current) throw new Error("vitexec writeFile called outside a run.");
-    return holder.current.writeFile(request);
-  });
-  return holder;
-}
-
 type Environment = Record<string, string | undefined>;
 
 type CliOptions = {
@@ -195,8 +146,12 @@ export async function resolveVitexecCodeInputDetails(
   }
 
   const input = codeParts[0];
-  const filePath = resolve(cwd, input);
-  if (!(await isFile(filePath))) return { code: input, moduleExtension: ".js" };
+  const directPath = resolve(cwd, input);
+  const vitexecPath = resolve(cwd, "vitexec", input);
+  let filePath: string | undefined;
+  if (await isFile(directPath)) filePath = directPath;
+  else if (await isFile(vitexecPath)) filePath = vitexecPath;
+  if (!filePath) return { code: input, moduleExtension: ".js" };
 
   return {
     code: await readFile(filePath, "utf8"),
@@ -268,7 +223,7 @@ async function runVitexecInServerTask(
   const url = buildServerPageUrl(server, options.path);
   let target: BrowserTarget | undefined;
   let cdp: CDPSession | undefined;
-  let detachBridge: (() => void) | undefined;
+  let completeInjectedCode: (() => void) | undefined;
   let performanceTrace: PerformanceTraceCapture | undefined;
   // Force-close a browser we launched if we are aborted mid-navigation; adopted
   // handles belong to the caller and are never closed here.
@@ -278,6 +233,11 @@ async function runVitexecInServerTask(
 
   const pendingConsoleLogs = new Set<Promise<void>>();
   const collectConsoleLog = (message: ConsoleMessage) => {
+    if (message.type() === "debug" && message.text() === id) {
+      completeInjectedCode?.();
+      return;
+    }
+
     const pendingLog = collectConsole(log, message);
     pendingConsoleLogs.add(pendingLog);
     pendingLog.finally(() => pendingConsoleLogs.delete(pendingLog));
@@ -298,6 +258,8 @@ async function runVitexecInServerTask(
     if (target.ownsBrowser) signal.addEventListener("abort", closeOwnedBrowser, { once: true });
     if (signal.aborted) return;
     const { page, context } = target;
+    const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
+    completeInjectedCode = injectedCodeFinished.resolve;
 
     if (!target.ownsContext && (options.networkTracePath || options.recordPath)) {
       log("[skipped] --record / --network-trace need a vitexec-created context; ignored for an adopted page/context");
@@ -318,16 +280,6 @@ async function runVitexecInServerTask(
     page.on("requestfailed", onRequestFailed);
     page.on("response", onResponse);
     page.on("framenavigated", onFrameNavigated);
-
-    const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
-    detachBridge = await attachPageRunBridge(page, {
-      onReport: injectedCodeFinished.resolve,
-      writeFile: async (request) => {
-        const result = await writeVitexecFile(server.config.root, request);
-        log(`[write-file] ${result.path}`);
-        return result;
-      }
-    });
 
     const response = await navigateRunPage(page, url, timeoutMs);
     if (!response) log("[navigation] no response");
@@ -366,9 +318,8 @@ async function runVitexecInServerTask(
     } finally {
       signal.removeEventListener("abort", closeOwnedBrowser);
       if (target) {
-        // Detach only our own listeners/bridge so a reused adopted page does not
+        // Remove only our own listeners so a reused adopted page does not
         // accumulate handlers across runs; the caller's listeners are untouched.
-        detachBridge?.();
         target.page.off("console", collectConsoleLog);
         target.page.off("pageerror", onPageError);
         target.page.off("requestfailed", onRequestFailed);
@@ -435,7 +386,19 @@ async function startViteServer(
       strictPort: false,
       watch: null
     },
-    plugins: [vitexec({ code, id, moduleExtension: options.moduleExtension })]
+    plugins: [
+      vitexec({
+        directory: false,
+        pages: {
+          [normalizePagePath(options.path ?? "/")]: {
+            code,
+            completionMessage: id,
+            id,
+            moduleExtension: options.moduleExtension
+          }
+        }
+      })
+    ]
   });
 
   await server.listen();
@@ -966,65 +929,6 @@ function sortNodesBySelfSize(values: HeapNodeSummary[]): HeapNodeSummary[] {
 async function writeJson(path: string, value: unknown): Promise<void> {
   await ensureParentDir(path);
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-}
-
-async function writeVitexecFile(
-  root: string,
-  request: VitexecWriteFileRequest
-): Promise<VitexecWriteFileResult> {
-  if (!isVitexecWriteFileRequest(request)) {
-    throw new Error("vitexec writeFile received an invalid request.");
-  }
-
-  const path = safeRootRelativePath(root, request.path);
-  await ensureParentDir(path);
-  const contents =
-    request.encoding === "base64"
-      ? Buffer.from(request.data, "base64")
-      : request.data;
-  await writeFile(path, contents);
-  return {
-    path: request.path,
-    bytes: Buffer.byteLength(contents)
-  };
-}
-
-function isVitexecWriteFileRequest(value: unknown): value is VitexecWriteFileRequest {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "path" in value &&
-    typeof value.path === "string" &&
-    "encoding" in value &&
-    (value.encoding === "utf8" || value.encoding === "base64") &&
-    "data" in value &&
-    typeof value.data === "string"
-  );
-}
-
-function safeRootRelativePath(root: string, path: string): string {
-  if (path.length === 0) {
-    throw new Error("vitexec writeFile path must not be empty.");
-  }
-  if (path.includes("\0")) {
-    throw new Error("vitexec writeFile path must not contain null bytes.");
-  }
-  if (isAbsolute(path)) {
-    throw new Error("vitexec writeFile path must be relative to the Vite root.");
-  }
-
-  const resolvedRoot = resolve(root);
-  const resolvedPath = resolve(resolvedRoot, path);
-  const relativePath = relative(resolvedRoot, resolvedPath);
-  if (
-    relativePath === ".." ||
-    relativePath.startsWith(`..${sep}`) ||
-    isAbsolute(relativePath)
-  ) {
-    throw new Error("vitexec writeFile path cannot escape the Vite root.");
-  }
-
-  return resolvedPath;
 }
 
 function createInjectedCodeCompletion(timeoutMs: number, signal: AbortSignal): {

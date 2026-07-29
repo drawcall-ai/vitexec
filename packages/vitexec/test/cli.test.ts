@@ -61,7 +61,7 @@ describe("vitexec CLI runner", () => {
       root: currentProject.root
     });
 
-    expect(output).toContain("[log] loaded");
+    expect(output).toBe("[log] loaded");
   });
 
   it("installs Chromium when the Playwright executable is missing", async () => {
@@ -116,6 +116,19 @@ describe("vitexec CLI runner", () => {
     });
   });
 
+  it("resolves bare file names from the vitexec directory", async () => {
+    currentProject = await createTempViteProject({
+      "vitexec/inspect.ts": "const message: string = 'from vitexec'; console.log(message)"
+    });
+
+    await expect(
+      resolveVitexecCodeInputDetails(["inspect.ts"], currentProject.root)
+    ).resolves.toEqual({
+      code: "const message: string = 'from vitexec'; console.log(message)",
+      moduleExtension: ".ts"
+    });
+  });
+
   it("keeps inline snippets as code when the input is not a file", async () => {
     await expect(
       resolveVitexecCodeInput(["console.log('inline')"])
@@ -166,53 +179,6 @@ describe("vitexec CLI runner", () => {
     });
 
     expect(output).toContain("[log] loaded from ts");
-  });
-
-  it("lets injected code write files relative to the Vite root", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        import { writeFile } from "vitexec/client";
-
-        await writeFile("generated/data.json", { ok: true });
-        await writeFile("generated/message.txt", "hello");
-        await writeFile("generated/bytes.bin", new Uint8Array([0, 1, 2, 3]).subarray(1, 3));
-        console.log("files written");
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    await expect(readJson(join(currentProject.root, "generated/data.json"))).resolves.toEqual({
-      ok: true
-    });
-    await expect(readFile(join(currentProject.root, "generated/message.txt"), "utf8")).resolves.toBe(
-      "hello"
-    );
-    await expect(readFile(join(currentProject.root, "generated/bytes.bin"))).resolves.toEqual(
-      Buffer.from([1, 2])
-    );
-    expect(output).toContain("[write-file] generated/data.json");
-    expect(output).toContain("[log] files written");
-  });
-
-  it("rejects vitexec/client writeFile paths outside the Vite root", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        import { writeFile } from "vitexec/client";
-
-        await writeFile("../escape.txt", "nope");
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("vitexec writeFile path cannot escape the Vite root");
   });
 
   it("captures runtime errors from injected code", async () => {
@@ -773,7 +739,9 @@ describe("vitexec CLI runner", () => {
 
     const output = await collectVitexec(
       `
-        const response = await fetch("/__vitexec/code/missing-network-trace");
+        const response = await fetch("/missing-network-trace.js", {
+          headers: { accept: "application/javascript" }
+        });
         console.log("network status", response.status);
       `,
       { configFile: false, root: currentProject.root, networkTracePath }
@@ -782,7 +750,7 @@ describe("vitexec CLI runner", () => {
     const har = readHar(await readJson(networkTracePath));
     expect(output).toContain(`[network-trace] ${networkTracePath}`);
     expect(har.log.entries.some((entry) => {
-      return entry.request.url.includes("/__vitexec/code/missing-network-trace") && entry.response.status === 404;
+      return entry.request.url.includes("/missing-network-trace.js") && entry.response.status === 404;
     })).toBe(true);
   });
 
@@ -893,29 +861,25 @@ describe("vitexec CLI runner", () => {
     }
   });
 
-  it("reuses one adopted page across sequential runs, each writing its own root", async () => {
+  it("reuses one adopted page across sequential runs", async () => {
     currentProject = await createTempViteProject({ "index.html": "<main>reuse</main>" });
-    const second = await createTempViteProject({ "index.html": "<main>reuse</main>" });
+    const second = await createTempViteProject({ "index.html": "<main>second</main>" });
     const browser = await chromium.launch();
     try {
       const page = await browser.newPage();
       await page.goto("about:blank");
 
       const first = await collectVitexec(
-        "import { writeFile } from 'vitexec/client'; await writeFile('run-1.txt', 'one'); console.log('run-1')",
+        "console.log('run-1', document.querySelector('main')?.textContent)",
         { configFile: false, root: currentProject.root, page }
       );
-      // A second run on the same page must not throw "function already registered",
-      // and its writeFile must land in the second run's root — not the first's.
       const secondOut = await collectVitexec(
-        "import { writeFile } from 'vitexec/client'; await writeFile('run-2.txt', 'two'); console.log('run-2')",
+        "console.log('run-2', document.querySelector('main')?.textContent)",
         { configFile: false, root: second.root, page }
       );
 
-      expect(first).toContain("[log] run-1");
-      expect(secondOut).toContain("[log] run-2");
-      expect(await readFile(join(currentProject.root, "run-1.txt"), "utf8")).toBe("one");
-      expect(await readFile(join(second.root, "run-2.txt"), "utf8")).toBe("two");
+      expect(first).toContain("[log] run-1 reuse");
+      expect(secondOut).toContain("[log] run-2 second");
       expect(page.isClosed()).toBe(false);
     } finally {
       await browser.close();
@@ -1121,12 +1085,17 @@ describe("vitexec CLI runner", () => {
     });
 
     const output = await collectVitexec(
-      "await fetch('/__vitexec/code/missing'); console.log('ready')",
+      `
+        await fetch("/missing-vitexec-resource.js", {
+          headers: { accept: "application/javascript" }
+        });
+        console.log("ready");
+      `,
       { configFile: false, root: currentProject.root }
     );
 
     expect(output).toContain("[http 404] GET");
-    expect(output).toContain("/__vitexec/code/missing");
+    expect(output).toContain("/missing-vitexec-resource.js");
     expect(output).not.toContain("Failed to load resource");
   });
 
