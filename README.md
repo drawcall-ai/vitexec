@@ -15,6 +15,14 @@ temporary app code.
 
 ## Install
 
+Install the package in the Vite app:
+
+```sh
+pnpm add -D vitexec
+```
+
+Install the agent skill:
+
 ```sh
 npx skills add drawcall-ai/vitexec
 ```
@@ -45,6 +53,52 @@ branch on state changes, and run full multi-step flows before logging the result
 
 Each run gets an isolated Vite server, its own Playwright browser, streamed logs,
 and optional screenshots, videos, traces, profiles, HARs, or heap snapshots.
+
+## Vite Plugin
+
+Add the plugin to expose the scripts in `./vitexec` as app pages in both the dev
+server and production build:
+
+```ts
+import { defineConfig } from "vite";
+import { vitexec } from "vitexec";
+
+export default defineConfig({
+  plugins: [vitexec()]
+});
+```
+
+```txt
+index.html
+vitexec/
+  smoke.ts       → /smoke.html
+  checkout.ts    → /checkout.html
+```
+
+Each generated page is the normal `index.html` plus its vitexec script. Only
+top-level `.js`, `.jsx`, `.mjs`, `.mts`, `.ts`, and `.tsx` files become pages, so
+scripts can import helpers from subdirectories.
+
+Use an explicit mapping when the scripts live elsewhere:
+
+```ts
+vitexec({
+  directory: false,
+  pages: {
+    "/checkout.html": "/checks/checkout.ts"
+  }
+});
+```
+
+Calling `vitexec()` more than once is safe. Identical directories and mappings
+are deduplicated; conflicting mappings fail the Vite config instead of depending
+on plugin order.
+
+The generated pages are included by `vite build`. Do not deploy them with
+production code if they perform destructive or privileged actions.
+
+See the [plugin-only example](./examples/vite-plugin-pages) for the same routes
+running under the normal Vite dev server and production build.
 
 ## Better Than Alternatives
 
@@ -89,8 +143,12 @@ No debug panel. No test-only app code. No guessing from pixels alone.
 
 ```sh
 vitexec --gpu --path /scene 'console.log(location.pathname)'
-vitexec --gpu --path /scene ./vitexec/check-scene.ts
+vitexec --gpu --path /scene check-scene.ts
 ```
+
+For a single argument, vitexec first checks the path as written, then checks the
+same path under `./vitexec`, and otherwise treats it as inline code. Thus
+`vitexec check-scene.ts` runs `./vitexec/check-scene.ts`.
 
 | Option | Use |
 |---|---|
@@ -105,6 +163,7 @@ vitexec --gpu --path /scene ./vitexec/check-scene.ts
 | `--network-trace ./network.har` | Capture network requests as HAR |
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
 | `--heap-snapshot ./heap.json` | Capture a jq-friendly decoded heap snapshot |
+| `--viewport 390x844` | Set the browser viewport (default 1280x720) |
 | `--timeout 30` | Set the maximum wait time |
 
 ## Environment Variables
@@ -125,7 +184,38 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_NETWORK_TRACE` | `--network-trace` |
 | `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
 | `VITEXEC_HEAP_SNAPSHOT` | `--heap-snapshot` |
+| `VITEXEC_VIEWPORT` | `--viewport` |
 
 When `--browser-ws-endpoint` is set, vitexec only sends browser-generic
 GPU/WebGPU launch flags. Start the remote Playwright server with any
 host-specific GPU policy that matches its platform.
+
+## Run inside a browser you already have
+
+By default vitexec launches its own Chromium. When you call it programmatically
+you can instead hand it a Playwright `browser`, `context`, or `page` you already
+own — the snippet runs in **that** browser with no second window. This is ideal
+when a dev server already opens a visible, instrumented tab (e.g. a WebXR
+emulator) and you want to watch the check run live in it.
+
+```ts
+import { runVitexec } from "vitexec/cli";
+
+// Reuse a page you own. vitexec navigates it to its own per-run URL, runs the
+// snippet, and never closes it — safe to reuse across many sequential runs.
+for await (const line of runVitexec(code, { root, page })) console.log(line);
+
+runVitexec(code, { root, context }); // open a fresh page in this context
+runVitexec(code, { root, browser }); // open a fresh context + page in this browser
+```
+
+vitexec only ever closes handles it created itself: an adopted `page` is left
+open, an adopted `context` keeps its own pages (vitexec closes just the page it
+opened), and an adopted `browser` keeps running (vitexec closes just the context
+it opened). Its own Vite server is always closed. `--record` and
+`--network-trace` need a vitexec-created context, so they are skipped for an
+adopted page or context.
+
+This is also how you reuse one browser across many runs: connect or launch it
+once yourself and pass it in — vitexec never closes what it did not create. (The
+CLI has no flag for this; adoption is a programmatic-only capability.)

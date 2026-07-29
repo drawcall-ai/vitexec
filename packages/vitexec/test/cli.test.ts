@@ -4,6 +4,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { chromium } from "playwright";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
@@ -60,7 +61,7 @@ describe("vitexec CLI runner", () => {
       root: currentProject.root
     });
 
-    expect(output).toContain("[log] loaded");
+    expect(output).toBe("[log] loaded");
   });
 
   it("installs Chromium when the Playwright executable is missing", async () => {
@@ -115,6 +116,19 @@ describe("vitexec CLI runner", () => {
     });
   });
 
+  it("resolves bare file names from the vitexec directory", async () => {
+    currentProject = await createTempViteProject({
+      "vitexec/inspect.ts": "const message: string = 'from vitexec'; console.log(message)"
+    });
+
+    await expect(
+      resolveVitexecCodeInputDetails(["inspect.ts"], currentProject.root)
+    ).resolves.toEqual({
+      code: "const message: string = 'from vitexec'; console.log(message)",
+      moduleExtension: ".ts"
+    });
+  });
+
   it("keeps inline snippets as code when the input is not a file", async () => {
     await expect(
       resolveVitexecCodeInput(["console.log('inline')"])
@@ -165,53 +179,6 @@ describe("vitexec CLI runner", () => {
     });
 
     expect(output).toContain("[log] loaded from ts");
-  });
-
-  it("lets injected code write files relative to the Vite root", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        import { writeFile } from "vitexec/client";
-
-        await writeFile("generated/data.json", { ok: true });
-        await writeFile("generated/message.txt", "hello");
-        await writeFile("generated/bytes.bin", new Uint8Array([0, 1, 2, 3]).subarray(1, 3));
-        console.log("files written");
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    await expect(readJson(join(currentProject.root, "generated/data.json"))).resolves.toEqual({
-      ok: true
-    });
-    await expect(readFile(join(currentProject.root, "generated/message.txt"), "utf8")).resolves.toBe(
-      "hello"
-    );
-    await expect(readFile(join(currentProject.root, "generated/bytes.bin"))).resolves.toEqual(
-      Buffer.from([1, 2])
-    );
-    expect(output).toContain("[write-file] generated/data.json");
-    expect(output).toContain("[log] files written");
-  });
-
-  it("rejects vitexec/client writeFile paths outside the Vite root", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        import { writeFile } from "vitexec/client";
-
-        await writeFile("../escape.txt", "nope");
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("vitexec writeFile path cannot escape the Vite root");
   });
 
   it("captures runtime errors from injected code", async () => {
@@ -772,7 +739,9 @@ describe("vitexec CLI runner", () => {
 
     const output = await collectVitexec(
       `
-        const response = await fetch("/__vitexec/code/missing-network-trace");
+        const response = await fetch("/missing-network-trace.js", {
+          headers: { accept: "application/javascript" }
+        });
         console.log("network status", response.status);
       `,
       { configFile: false, root: currentProject.root, networkTracePath }
@@ -781,7 +750,7 @@ describe("vitexec CLI runner", () => {
     const har = readHar(await readJson(networkTracePath));
     expect(output).toContain(`[network-trace] ${networkTracePath}`);
     expect(har.log.entries.some((entry) => {
-      return entry.request.url.includes("/__vitexec/code/missing-network-trace") && entry.response.status === 404;
+      return entry.request.url.includes("/missing-network-trace.js") && entry.response.status === 404;
     })).toBe(true);
   });
 
@@ -870,6 +839,122 @@ describe("vitexec CLI runner", () => {
     );
 
     expect(output).toContain("[log] remote text remote");
+  });
+
+  it("runs in an adopted page and leaves it (and its browser) open", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>adopt</main>" });
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      await page.goto("about:blank");
+
+      const output = await collectVitexec(
+        "console.log('adopted', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, page }
+      );
+
+      expect(output).toContain("[log] adopted adopt");
+      expect(page.isClosed()).toBe(false);
+      expect(browser.isConnected()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("reuses one adopted page across sequential runs", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>reuse</main>" });
+    const second = await createTempViteProject({ "index.html": "<main>second</main>" });
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      await page.goto("about:blank");
+
+      const first = await collectVitexec(
+        "console.log('run-1', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, page }
+      );
+      const secondOut = await collectVitexec(
+        "console.log('run-2', document.querySelector('main')?.textContent)",
+        { configFile: false, root: second.root, page }
+      );
+
+      expect(first).toContain("[log] run-1 reuse");
+      expect(secondOut).toContain("[log] run-2 second");
+      expect(page.isClosed()).toBe(false);
+    } finally {
+      await browser.close();
+      await second.close();
+    }
+  });
+
+  it("adopts a context (fresh page inside it) and closes only that page", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>ctx</main>" });
+    const browser = await chromium.launch();
+    try {
+      const context = await browser.newContext({ ignoreHTTPSErrors: true });
+      const preexisting = await context.newPage();
+
+      const output = await collectVitexec(
+        "console.log('ctx', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, context }
+      );
+
+      expect(output).toContain("[log] ctx ctx");
+      expect(browser.isConnected()).toBe(true);
+      expect(preexisting.isClosed()).toBe(false);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("adopts a browser (fresh context + page) and leaves the browser open", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>br</main>" });
+    const browser = await chromium.launch();
+    try {
+      const output = await collectVitexec(
+        "console.log('br', document.querySelector('main')?.textContent)",
+        { configFile: false, root: currentProject.root, browser }
+      );
+
+      expect(output).toContain("[log] br br");
+      expect(browser.isConnected()).toBe(true);
+    } finally {
+      await browser.close();
+    }
+  });
+
+  it("opens the launched browser at a custom --viewport", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>vp</main>" });
+
+    const output = await collectVitexec(
+      "console.log('viewport', `${window.innerWidth}x${window.innerHeight}`)",
+      { configFile: false, root: currentProject.root, viewport: "390x844" }
+    );
+
+    expect(output).toContain("[log] viewport 390x844");
+  });
+
+  it("can emulate touch input", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>touch</main>" });
+
+    const output = await collectVitexec(
+      "console.log('touch', navigator.maxTouchPoints, matchMedia('(pointer: coarse)').matches)",
+      { configFile: false, root: currentProject.root, touch: true }
+    );
+
+    expect(output).toContain("[log] touch 1 true");
+  });
+
+  it("rejects a malformed --viewport instead of silently using the default", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>vp</main>" });
+
+    await expect(
+      collectVitexec("console.log('unreached')", {
+        configFile: false,
+        root: currentProject.root,
+        viewport: "not-a-size"
+      })
+    ).rejects.toThrow(/invalid --viewport/);
   });
 
   it("sends generic GPU launch options to remote Playwright browser servers", () => {
@@ -1000,12 +1085,17 @@ describe("vitexec CLI runner", () => {
     });
 
     const output = await collectVitexec(
-      "await fetch('/__vitexec/code/missing'); console.log('ready')",
+      `
+        await fetch("/missing-vitexec-resource.js", {
+          headers: { accept: "application/javascript" }
+        });
+        console.log("ready");
+      `,
       { configFile: false, root: currentProject.root }
     );
 
     expect(output).toContain("[http 404] GET");
-    expect(output).toContain("/__vitexec/code/missing");
+    expect(output).toContain("/missing-vitexec-resource.js");
     expect(output).not.toContain("Failed to load resource");
   });
 

@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, extname, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
@@ -13,19 +13,16 @@ import {
   type BrowserContext,
   type CDPSession,
   type ConsoleMessage,
+  type Frame,
   type Page,
   type Request,
-  type Response
+  type Response,
+  type ViewportSize
 } from "playwright";
 import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
 
-export { vitexec };
 export type { VitexecModuleExtension };
-
-declare global {
-  var __vitexecRuns: Record<string, Promise<unknown> | undefined>;
-}
 
 export const VITEXEC_TIMEOUT_MS = 10 * 60 * 1000;
 export const VITEXEC_DEFAULT_REMOTE_EXPOSE_NETWORK = "<loopback>";
@@ -42,7 +39,9 @@ export const VITEXEC_ENV = {
   performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
   record: "VITEXEC_RECORD",
   screenshot: "VITEXEC_SCREENSHOT",
-  timeout: "VITEXEC_TIMEOUT"
+  touch: "VITEXEC_TOUCH",
+  timeout: "VITEXEC_TIMEOUT",
+  viewport: "VITEXEC_VIEWPORT"
 } as const;
 export const VITEXEC_LOCAL_GPU_BROWSER_ARGS = [
   "--enable-gpu",
@@ -69,17 +68,27 @@ export type RunVitexecOptions = {
   root?: string;
   screenshotPath?: string;
   timeoutMs?: number;
-};
-
-type VitexecWriteFileRequest = {
-  path: string;
-  encoding: "utf8" | "base64";
-  data: string;
-};
-
-type VitexecWriteFileResult = {
-  path: string;
-  bytes: number;
+  /** Enable touch input and a coarse pointer in contexts Vitexec creates. */
+  touch?: boolean;
+  /** Browser viewport as "WIDTHxHEIGHT" (e.g. "390x844" for a phone). Defaults to Playwright's 1280x720. */
+  viewport?: string;
+  /**
+   * Run inside a browser you already own instead of launching one. vitexec opens
+   * a fresh context + page in it and never closes the browser (only that context).
+   */
+  browser?: Browser;
+  /**
+   * Run inside a context you already own. vitexec opens a fresh page in it and
+   * closes only that page — never the context or its browser.
+   */
+  context?: BrowserContext;
+  /**
+   * Run inside a page you already own — e.g. a dev server's visible managed tab.
+   * vitexec navigates it to its own per-run URL, runs the snippet, and never
+   * closes the page/context/browser. The same page may be reused across runs.
+   * Same-process only: a Page is a live RPC proxy bound to its owning process.
+   */
+  page?: Page;
 };
 
 type Environment = Record<string, string | undefined>;
@@ -97,6 +106,8 @@ type CliOptions = {
   performanceTrace?: string;
   record?: string;
   screenshot?: string;
+  touch?: boolean;
+  viewport?: string;
   timeout?: number;
 };
 
@@ -135,8 +146,12 @@ export async function resolveVitexecCodeInputDetails(
   }
 
   const input = codeParts[0];
-  const filePath = resolve(cwd, input);
-  if (!(await isFile(filePath))) return { code: input, moduleExtension: ".js" };
+  const directPath = resolve(cwd, input);
+  const vitexecPath = resolve(cwd, "vitexec", input);
+  let filePath: string | undefined;
+  if (await isFile(directPath)) filePath = directPath;
+  else if (await isFile(vitexecPath)) filePath = vitexecPath;
+  if (!filePath) return { code: input, moduleExtension: ".js" };
 
   return {
     code: await readFile(filePath, "utf8"),
@@ -206,35 +221,50 @@ async function runVitexecInServerTask(
 ): Promise<void> {
   const timeoutMs = options.timeoutMs ?? VITEXEC_TIMEOUT_MS;
   const url = buildServerPageUrl(server, options.path);
-  let browser: Browser | undefined;
-  let context: BrowserContext | undefined;
-  let page: Page | undefined;
+  let target: BrowserTarget | undefined;
   let cdp: CDPSession | undefined;
+  let completeInjectedCode: (() => void) | undefined;
   let performanceTrace: PerformanceTraceCapture | undefined;
-  const closeBrowser = () => void browser?.close().catch(() => undefined);
+  // Force-close a browser we launched if we are aborted mid-navigation; adopted
+  // handles belong to the caller and are never closed here.
+  const closeOwnedBrowser = () => {
+    if (target?.ownsBrowser) void target.browser?.close().catch(() => undefined);
+  };
 
   const pendingConsoleLogs = new Set<Promise<void>>();
   const collectConsoleLog = (message: ConsoleMessage) => {
+    if (message.type() === "debug" && message.text() === id) {
+      completeInjectedCode?.();
+      return;
+    }
+
     const pendingLog = collectConsole(log, message);
     pendingConsoleLogs.add(pendingLog);
     pendingLog.finally(() => pendingConsoleLogs.delete(pendingLog));
   };
+  let hasMainFrameNavigated = false;
+  const onPageError = (error: Error) => log(`[page error] ${error.message}`);
+  const onRequestFailed = (request: Request) => log(formatRequestFailure(request));
+  const onResponse = (response: Response) => {
+    if (response.status() >= 400) log(formatHttpError(response));
+  };
+  const onFrameNavigated = (frame: Frame) => {
+    if (frame !== target?.page.mainFrame()) return;
+    if (hasMainFrameNavigated) log(`[navigation] navigated ${frame.url()}`);
+    hasMainFrameNavigated = true;
+  };
   try {
-    browser = await launchBrowser(options, log);
-    signal.addEventListener("abort", closeBrowser, { once: true });
+    target = await acquireBrowserTarget(options, log);
+    if (target.ownsBrowser) signal.addEventListener("abort", closeOwnedBrowser, { once: true });
     if (signal.aborted) return;
+    const { page, context } = target;
+    const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
+    completeInjectedCode = injectedCodeFinished.resolve;
 
-    if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
-    context = await browser.newContext({
-      ignoreHTTPSErrors: true,
-      ...(options.networkTracePath && !signal.aborted
-        ? { recordHar: { path: options.networkTracePath } }
-        : {}),
-      ...(options.recordPath && !signal.aborted
-        ? { recordVideo: { dir: dirname(options.recordPath) } }
-        : {})
-    });
-    page = await context.newPage();
+    if (!target.ownsContext && (options.networkTracePath || options.recordPath)) {
+      log("[skipped] --record / --network-trace need a vitexec-created context; ignored for an adopted page/context");
+    }
+
     cdp = await context.newCDPSession(page);
     if (options.cpuProfilePath) {
       await cdp.send("Profiler.enable");
@@ -246,31 +276,12 @@ async function runVitexecInServerTask(
     page.setDefaultTimeout(timeoutMs);
     page.setDefaultNavigationTimeout(timeoutMs);
     page.on("console", collectConsoleLog);
-    page.on("pageerror", (error) => log(`[page error] ${error.message}`));
-    page.on("requestfailed", (request) => log(formatRequestFailure(request)));
-    page.on("response", (response) => {
-      if (response.status() >= 400) log(formatHttpError(response));
-    });
-    let hasMainFrameNavigated = false;
-    page.on("framenavigated", (frame) => {
-      if (frame !== page?.mainFrame()) return;
-      if (hasMainFrameNavigated) {
-        log(`[navigation] navigated ${frame.url()}`);
-      }
-      hasMainFrameNavigated = true;
-    });
-    const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
-    await page.exposeFunction("__vitexecReport", injectedCodeFinished.resolve);
-    await page.exposeFunction("__vitexecWriteFile", async (request: VitexecWriteFileRequest) => {
-      const result = await writeVitexecFile(server.config.root, request);
-      log(`[write-file] ${result.path}`);
-      return result;
-    });
+    page.on("pageerror", onPageError);
+    page.on("requestfailed", onRequestFailed);
+    page.on("response", onResponse);
+    page.on("framenavigated", onFrameNavigated);
 
-    const response = await page.goto(url, {
-      timeout: timeoutMs,
-      waitUntil: "load"
-    });
+    const response = await navigateRunPage(page, url, timeoutMs);
     if (!response) log("[navigation] no response");
     if (response && !response.ok()) {
       log(`[navigation] ${response.status()} ${response.statusText()} ${response.url()}`);
@@ -300,14 +311,24 @@ async function runVitexecInServerTask(
         await saveHeapSnapshotSummary(cdp, options.heapSnapshotPath);
         log(`[heap-snapshot] ${options.heapSnapshotPath}`);
       }
-      if (page && options.recordPath && !signal.aborted) {
-        await saveRecording(page, options.recordPath);
+      if (target?.ownsContext && options.recordPath && !signal.aborted) {
+        await saveRecording(target.page, options.recordPath);
         log(`[recording] ${options.recordPath}`);
       }
     } finally {
-      signal.removeEventListener("abort", closeBrowser);
-      if (context) {
-        await context.close().then(
+      signal.removeEventListener("abort", closeOwnedBrowser);
+      if (target) {
+        // Remove only our own listeners so a reused adopted page does not
+        // accumulate handlers across runs; the caller's listeners are untouched.
+        target.page.off("console", collectConsoleLog);
+        target.page.off("pageerror", onPageError);
+        target.page.off("requestfailed", onRequestFailed);
+        target.page.off("response", onResponse);
+        target.page.off("framenavigated", onFrameNavigated);
+      }
+      if (cdp) await cdp.detach().catch(() => undefined);
+      if (target?.ownsContext) {
+        await target.context.close().then(
           () => {
             if (options.networkTracePath && !signal.aborted) {
               log(`[network-trace] ${options.networkTracePath}`);
@@ -315,10 +336,36 @@ async function runVitexecInServerTask(
           },
           () => undefined
         );
+      } else if (target?.ownsPage) {
+        await target.page.close().catch(() => undefined);
       }
-      await browser?.close().catch(() => undefined);
+      if (target?.ownsBrowser) {
+        await target.browser?.close().catch(() => undefined);
+      }
     }
   }
+}
+
+// An adopted page reused across runs still shows the previous run's document,
+// whose Vite server has since closed. Navigating away cancels that orphaned
+// document's now-failing requests, which Chromium can surface as a one-off
+// net::ERR_ABORTED on the new navigation. Retry that exact case once; the second
+// attempt starts clean. A genuine navigation failure still throws both times.
+async function navigateRunPage(
+  page: Page,
+  url: string,
+  timeoutMs: number
+): Promise<Response | null> {
+  try {
+    return await page.goto(url, { timeout: timeoutMs, waitUntil: "load" });
+  } catch (error) {
+    if (!isAbortedNavigationError(error)) throw error;
+    return page.goto(url, { timeout: timeoutMs, waitUntil: "load" });
+  }
+}
+
+function isAbortedNavigationError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("net::ERR_ABORTED");
 }
 
 async function startViteServer(
@@ -339,7 +386,19 @@ async function startViteServer(
       strictPort: false,
       watch: null
     },
-    plugins: [vitexec({ code, id, moduleExtension: options.moduleExtension })]
+    plugins: [
+      vitexec({
+        directory: false,
+        pages: {
+          [normalizePagePath(options.path ?? "/")]: {
+            code,
+            completionMessage: id,
+            id,
+            moduleExtension: options.moduleExtension
+          }
+        }
+      })
+    ]
   });
 
   await server.listen();
@@ -397,6 +456,86 @@ async function launchBrowser(
     channel: "chromium",
     args: createBrowserArgs(options)
   });
+}
+
+type BrowserTarget = {
+  browser: Browser | undefined;
+  context: BrowserContext;
+  page: Page;
+  ownsContext: boolean;
+  ownsPage: boolean;
+  ownsBrowser: boolean;
+};
+
+// Acquire the page vitexec will drive, tracking exactly which handles it created.
+// Anything the caller provided (page/context/browser) is reused and left open;
+// vitexec only ever tears down what it made itself.
+async function acquireBrowserTarget(
+  options: RunVitexecOptions,
+  log: (line: string) => void
+): Promise<BrowserTarget> {
+  // Validate the viewport before launching anything, so a bad value fails fast
+  // instead of leaking a just-launched browser. It only applies to contexts we
+  // create; an adopted page/context keeps its own viewport.
+  const viewport = parseViewport(options.viewport);
+
+  if (options.page) {
+    const context = options.page.context();
+    return {
+      browser: context.browser() ?? undefined,
+      context,
+      page: options.page,
+      ownsContext: false,
+      ownsPage: false,
+      ownsBrowser: false
+    };
+  }
+
+  if (options.context) {
+    return {
+      browser: options.context.browser() ?? undefined,
+      context: options.context,
+      page: await options.context.newPage(),
+      ownsContext: false,
+      ownsPage: true,
+      ownsBrowser: false
+    };
+  }
+
+  const browser = options.browser ?? (await launchBrowser(options, log));
+  const context = await createRunContext(browser, viewport, options);
+  return {
+    browser,
+    context,
+    page: await context.newPage(),
+    ownsContext: true,
+    ownsPage: true,
+    ownsBrowser: options.browser === undefined
+  };
+}
+
+async function createRunContext(
+  browser: Browser,
+  viewport: ViewportSize | null,
+  options: RunVitexecOptions
+): Promise<BrowserContext> {
+  if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
+  return browser.newContext({
+    ignoreHTTPSErrors: true,
+    hasTouch: options.touch,
+    ...(viewport ? { viewport } : {}),
+    ...(options.networkTracePath ? { recordHar: { path: options.networkTracePath } } : {}),
+    ...(options.recordPath ? { recordVideo: { dir: dirname(options.recordPath) } } : {})
+  });
+}
+
+// "390x844" -> { width: 390, height: 844 }. Throws on a malformed value rather than silently
+// falling back to the default, so a bad --viewport surfaces instead of testing the wrong size.
+function parseViewport(value: string | undefined): ViewportSize | null {
+  if (!value) return null;
+  const match = /^(\d+)x(\d+)$/.exec(value.trim());
+  if (!match) throw new Error(`invalid --viewport "${value}" — expected WIDTHxHEIGHT, e.g. 390x844`);
+  return { width: Number(match[1]), height: Number(match[2]) };
 }
 
 export function createRemoteBrowserHeaders(
@@ -792,65 +931,6 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-async function writeVitexecFile(
-  root: string,
-  request: VitexecWriteFileRequest
-): Promise<VitexecWriteFileResult> {
-  if (!isVitexecWriteFileRequest(request)) {
-    throw new Error("vitexec writeFile received an invalid request.");
-  }
-
-  const path = safeRootRelativePath(root, request.path);
-  await ensureParentDir(path);
-  const contents =
-    request.encoding === "base64"
-      ? Buffer.from(request.data, "base64")
-      : request.data;
-  await writeFile(path, contents);
-  return {
-    path: request.path,
-    bytes: Buffer.byteLength(contents)
-  };
-}
-
-function isVitexecWriteFileRequest(value: unknown): value is VitexecWriteFileRequest {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "path" in value &&
-    typeof value.path === "string" &&
-    "encoding" in value &&
-    (value.encoding === "utf8" || value.encoding === "base64") &&
-    "data" in value &&
-    typeof value.data === "string"
-  );
-}
-
-function safeRootRelativePath(root: string, path: string): string {
-  if (path.length === 0) {
-    throw new Error("vitexec writeFile path must not be empty.");
-  }
-  if (path.includes("\0")) {
-    throw new Error("vitexec writeFile path must not contain null bytes.");
-  }
-  if (isAbsolute(path)) {
-    throw new Error("vitexec writeFile path must be relative to the Vite root.");
-  }
-
-  const resolvedRoot = resolve(root);
-  const resolvedPath = resolve(resolvedRoot, path);
-  const relativePath = relative(resolvedRoot, resolvedPath);
-  if (
-    relativePath === ".." ||
-    relativePath.startsWith(`..${sep}`) ||
-    isAbsolute(relativePath)
-  ) {
-    throw new Error("vitexec writeFile path cannot escape the Vite root.");
-  }
-
-  return resolvedPath;
-}
-
 function createInjectedCodeCompletion(timeoutMs: number, signal: AbortSignal): {
   promise: Promise<void>;
   resolve: () => void;
@@ -988,6 +1068,8 @@ async function main(): Promise<void> {
       "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
     )
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
+    .option("--touch", "emulate touch input and a coarse pointer")
+    .option("--viewport <WIDTHxHEIGHT>", "browser viewport, e.g. 390x844 for a phone (default 1280x720)")
     .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
     .showHelpAfterError()
     .parse();
@@ -1041,6 +1123,8 @@ export function createRunOptions(
     performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
     recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
+    touch: options.touch ?? envBoolean(env, VITEXEC_ENV.touch),
+    viewport: options.viewport ?? envString(env, VITEXEC_ENV.viewport),
     timeoutMs: timeout === undefined ? undefined : timeout * 1000
   };
 }
