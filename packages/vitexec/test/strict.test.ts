@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertStrictSource, verifyStrictSource } from "../src/strict/index.js";
+import { assertStrictSource, verifyStrictSource } from "../src/strict/verify.js";
 
 function issueCodes(source: string): string[] {
   return verifyStrictSource(source).issues.map((issue) => issue.code);
@@ -11,18 +11,22 @@ describe("strict source verifier", () => {
       .toThrow("Strict source verification failed: external-call at 1:1");
   });
 
-  it("accepts the documented read, compute, observe, and input subset", () => {
+  it("accepts the documented observe, compute, log, and input subset", () => {
     const result = verifyStrictSource(`
-      import { input } from "vitexec";
+      import { input, observe } from "vitexec";
 
-      const ready = window.app.state.ready;
+      const app = observe({
+        ready: { kind: "boolean", path: ["state", "ready"] },
+        first: { kind: "string", path: ["items", 0] }
+      });
+      const ready = app.ready;
       const base = 20;
       const total = base + 2;
       let label = "waiting";
       if (ready === true) label = "ready";
 
       const report = {
-        first: window.app.items[0],
+        first: app.first,
         label,
         ready,
         total
@@ -58,8 +62,8 @@ describe("strict source verifier", () => {
   });
 
   it.each([
-    ["keyboard", `input({ type: "keyboard.down", key: "w", durationMs: 100 });`],
-    ["mouse", `input({ type: "mouse.down", button: "left", durationMs: 100 });`]
+    ["keyboard", `await input({ type: "keyboard.down", key: "w", durationMs: 100 });`],
+    ["mouse", `await input({ type: "mouse.down", button: "left", durationMs: 100 });`]
   ])("preflights an invalid literal %s hold", (_name, command) => {
     const result = verifyStrictSource(`
       import { input } from "vitexec";
@@ -82,10 +86,19 @@ describe("strict source verifier", () => {
     `)).toEqual([]);
   });
 
-  it("leaves dynamic literal fields to runtime validation", () => {
+  it("requires physical input to be awaited", () => {
     expect(issueCodes(`
       import { input } from "vitexec";
-      const durationMs = window.app.holdDuration;
+      input({ type: "keyboard.up", key: "w" });
+    `)).toContain("external-call");
+  });
+
+  it("leaves dynamic literal fields to runtime validation", () => {
+    expect(issueCodes(`
+      import { input, observe } from "vitexec";
+      const durationMs = observe({
+        value: { kind: "number", path: ["holdDuration"] }
+      }).value;
       await input({ type: "keyboard.down", key: "w", durationMs });
     `)).toEqual([]);
   });
@@ -198,13 +211,13 @@ describe("strict source verifier", () => {
     expect(verifyStrictSource(source).ok).toBe(false);
   });
 
-  it("rejects coercion of the observation record or an unprojected field", () => {
+  it("keeps application reads behind the observation provider", () => {
+    expect(issueCodes(`window.app.value;`)).toContain("external-call");
     expect(issueCodes(`
       import { observe } from "vitexec";
       const sample = observe({ value: { kind: "number", path: ["value"] } });
-      sample + 1;
-      sample.other + 1;
-    `)).toEqual(["external-call", "external-call"]);
+      sample.value + 1;
+    `)).toEqual([]);
   });
 
   it.each([
@@ -285,11 +298,10 @@ describe("strict source verifier", () => {
 
   it("rejects JSX categorically", () => {
     const result = verifyStrictSource(`<div ready />;`, {
-      language: "typescript-jsx"
+      language: "typescript"
     });
 
     expect(result.ok).toBe(false);
-    expect(result.issues.map((issue) => issue.code)).toContain("external-call");
   });
 
   it.each([

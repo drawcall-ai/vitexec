@@ -15,13 +15,8 @@ export type ValidatedObservationField = {
   path: ObservationPathSegment[];
 };
 
-function ownDataProperty(value: object, key: PropertyKey): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(value, key);
-  if (!descriptor || !("value" in descriptor)) {
-    throw new Error(`Observation path requires an own data property ${JSON.stringify(String(key))}.`);
-  }
-  const result: unknown = descriptor.value;
-  return result;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function propertyName(value: unknown, label: string): string {
@@ -52,15 +47,11 @@ function fieldPath(value: unknown, label: string): ObservationPathSegment[] {
       `${label} must contain 1-${MAXIMUM_OBSERVATION_PATH_DEPTH} path segments.`
     );
   }
-  const result: ObservationPathSegment[] = [];
-  for (let index = 0; index < value.length; index += 1) {
-    result.push(pathSegment(ownDataProperty(value, index), `${label}[${index}]`));
-  }
-  return result;
+  return value.map((segment, index) => pathSegment(segment, `${label}[${index}]`));
 }
 
 function observationField(value: unknown, label: string): ValidatedObservationField {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new Error(`${label} must be an observation field object.`);
   }
   const keys = Object.keys(value);
@@ -70,11 +61,11 @@ function observationField(value: unknown, label: string): ValidatedObservationFi
   if (keys.length !== expectedKeyCount || !keys.includes("kind") || !keys.includes("path")) {
     throw new Error(`${label} must contain kind, path, and optionally nullable and optional.`);
   }
-  const nullable = hasNullable ? ownDataProperty(value, "nullable") : false;
+  const nullable = hasNullable ? value.nullable : false;
   if (typeof nullable !== "boolean") {
     throw new Error(`${label}.nullable must be boolean.`);
   }
-  const optional = hasOptional ? ownDataProperty(value, "optional") : false;
+  const optional = hasOptional ? value.optional : false;
   if (typeof optional !== "boolean") {
     throw new Error(`${label}.optional must be boolean.`);
   }
@@ -82,17 +73,17 @@ function observationField(value: unknown, label: string): ValidatedObservationFi
     throw new Error(`${label}.optional requires nullable: true.`);
   }
   return {
-    kind: fieldKind(ownDataProperty(value, "kind"), `${label}.kind`),
+    kind: fieldKind(value.kind, `${label}.kind`),
     nullable,
     optional,
-    path: fieldPath(ownDataProperty(value, "path"), `${label}.path`)
+    path: fieldPath(value.path, `${label}.path`)
   };
 }
 
 export function validateObservationProjection(
   value: unknown
 ): Map<string, ValidatedObservationField> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new Error("Observation projection must be an object.");
   }
   const keys = Object.keys(value);
@@ -104,10 +95,7 @@ export function validateObservationProjection(
   const result = new Map<string, ValidatedObservationField>();
   for (const rawKey of keys) {
     const key = propertyName(rawKey, "Observation output key");
-    result.set(key, observationField(
-      ownDataProperty(value, key),
-      `Observation field ${JSON.stringify(key)}`
-    ));
+    result.set(key, observationField(value[key], `Observation field ${JSON.stringify(key)}`));
   }
   return result;
 }

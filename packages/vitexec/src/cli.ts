@@ -22,7 +22,7 @@ import {
 import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
 import { installPlaywrightInput } from "./input/playwright.js";
-import { assertStrictSource } from "./strict/index.js";
+import { assertStrictSource } from "./strict/verify.js";
 import type { StrictSourceLanguage } from "./strict/types.js";
 
 export type { VitexecModuleExtension };
@@ -143,14 +143,12 @@ function strictLanguage(extension: VitexecModuleExtension): StrictSourceLanguage
   switch (extension) {
     case ".js":
     case ".mjs":
-      return "javascript";
     case ".jsx":
-      return "javascript-jsx";
+      return "javascript";
     case ".ts":
     case ".mts":
-      return "typescript";
     case ".tsx":
-      return "typescript-jsx";
+      return "typescript";
   }
 }
 

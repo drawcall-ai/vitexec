@@ -6,29 +6,17 @@ import type {
 } from "./types.js";
 
 type StrictProgram = {
-  checker: ts.TypeChecker;
-  program: ts.Program;
+  diagnostics: readonly ts.Diagnostic[];
   sourceFile: ts.SourceFile;
 };
-
-const librarySourceFiles = new Map<string, ts.SourceFile>();
 
 function sourceLanguage(language: StrictSourceLanguage): {
   fileName: string;
   scriptKind: ts.ScriptKind;
 } {
-  switch (language) {
-    case "javascript":
-      return { fileName: "/submitted.js", scriptKind: ts.ScriptKind.JS };
-    case "javascript-jsx":
-      return { fileName: "/submitted.jsx", scriptKind: ts.ScriptKind.JSX };
-    case "typescript":
-      return { fileName: "/submitted.ts", scriptKind: ts.ScriptKind.TS };
-    case "typescript-jsx":
-      return { fileName: "/submitted.tsx", scriptKind: ts.ScriptKind.TSX };
-    default:
-      throw new Error(`Unsupported strict source language: ${String(language)}`);
-  }
+  return language === "javascript"
+    ? { fileName: "/submitted.js", scriptKind: ts.ScriptKind.JS }
+    : { fileName: "/submitted.ts", scriptKind: ts.ScriptKind.TS };
 }
 
 export function createStrictProgram(
@@ -43,39 +31,18 @@ export function createStrictProgram(
     true,
     scriptKind
   );
-  const options: ts.CompilerOptions = {
+  const diagnostics = ts.transpileModule(source, {
+    compilerOptions: {
     allowJs: true,
     module: ts.ModuleKind.ESNext,
-    moduleDetection: ts.ModuleDetectionKind.Force,
-    noResolve: true,
     target: ts.ScriptTarget.ESNext
-  };
-  const baseHost = ts.createCompilerHost(options, true);
-  const host: ts.CompilerHost = {
-    ...baseHost,
-    fileExists: (path) => path === fileName || baseHost.fileExists(path),
-    getSourceFile: (path, languageVersion) => {
-      if (path === fileName) return sourceFile;
-      const cached = librarySourceFiles.get(path);
-      if (cached) return cached;
-      const loaded = baseHost.getSourceFile(path, languageVersion);
-      if (loaded) librarySourceFiles.set(path, loaded);
-      return loaded;
     },
-    readFile: (path) => path === fileName ? source : baseHost.readFile(path),
-    writeFile: () => {
-      throw new Error("Strict source verification does not emit files.");
-    }
-  };
-  const program = ts.createProgram({ host, options, rootNames: [fileName] });
-  const programSource = program.getSourceFile(fileName);
-  if (!programSource) {
-    throw new Error(`TypeScript did not create the strict source file ${fileName}.`);
-  }
+    fileName,
+    reportDiagnostics: true
+  }).diagnostics ?? [];
   return {
-    checker: program.getTypeChecker(),
-    program,
-    sourceFile: programSource
+    diagnostics,
+    sourceFile
   };
 }
 

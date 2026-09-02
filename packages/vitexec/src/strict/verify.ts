@@ -9,17 +9,12 @@ import type {
   StrictSourceVerification,
   VerifyStrictSourceOptions
 } from "./types.js";
-import {
-  FORBIDDEN_OBSERVATION_KEYS,
-  MAXIMUM_OBSERVATION_FIELDS,
-  MAXIMUM_OBSERVATION_PATH_DEPTH,
-  OBSERVATION_KINDS
-} from "../observe/policy.js";
-import { literalInputCommandError } from "./literal-input.js";
+import { validateObservationProjection } from "../observe/fields.js";
+import { parseInputCommand } from "../input/parse.js";
+import { literalValue } from "./literal.js";
 
-// This verifier deliberately recognizes a small fail-closed subset. It trusts
-// fixed property reads, direct `input(...)`, and passive console calls. Syntax
-// that can hide execution is rejected by category.
+// Strict source can only observe provider JSON, compute locally, log, and send
+// direct physical input. Syntax that can hide execution is rejected by category.
 
 const ASSIGNMENT_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.EqualsToken,
@@ -38,15 +33,6 @@ const ASSIGNMENT_OPERATORS = new Set<ts.SyntaxKind>([
   ts.SyntaxKind.BarBarEqualsToken,
   ts.SyntaxKind.AmpersandAmpersandEqualsToken,
   ts.SyntaxKind.QuestionQuestionEqualsToken
-]);
-
-const SAFE_BINARY_OPERATORS = new Set<ts.SyntaxKind>([
-  ts.SyntaxKind.AmpersandAmpersandToken,
-  ts.SyntaxKind.BarBarToken,
-  ts.SyntaxKind.CommaToken,
-  ts.SyntaxKind.EqualsEqualsEqualsToken,
-  ts.SyntaxKind.ExclamationEqualsEqualsToken,
-  ts.SyntaxKind.QuestionQuestionToken
 ]);
 
 const IMPLICIT_CALL_BINARY_OPERATORS = new Set<ts.SyntaxKind>([
@@ -81,20 +67,16 @@ const PHYSICAL_INPUT_TYPES = new Set([
 ]);
 
 class StrictSubsetVerifier {
-  readonly #approvedInputSymbols = new Set<ts.Symbol>();
-  readonly #approvedObserveSymbols = new Set<ts.Symbol>();
-  readonly #assignedValues = new Map<ts.Symbol, ts.Expression[]>();
-  readonly #checker: ts.TypeChecker;
+  readonly #bindings = new Map<string, number>();
   readonly #issues: StrictSourceIssue[] = [];
   readonly #sourceFile: ts.SourceFile;
-  readonly #sourceBindingNames = new Set<string>();
+  readonly #variables = new Set<string>();
+  #hasInputImport = false;
+  #hasObserveImport = false;
 
-  constructor(sourceFile: ts.SourceFile, checker: ts.TypeChecker) {
+  constructor(sourceFile: ts.SourceFile) {
     this.#sourceFile = sourceFile;
-    this.#checker = checker;
-    this.#collectSourceBindingNames(this.#sourceFile);
-    this.#collectApprovedCapabilitySymbols();
-    this.#collectAssignedValues(this.#sourceFile);
+    this.#collectBindings(this.#sourceFile);
   }
 
   verify(): StrictSourceIssue[] {
@@ -102,75 +84,28 @@ class StrictSubsetVerifier {
     return this.#issues;
   }
 
-  #collectApprovedCapabilitySymbols(): void {
-    for (const statement of this.#sourceFile.statements) {
-      if (!ts.isImportDeclaration(statement) ||
-        !this.#isApprovedCapabilityImport(statement)) {
-        continue;
+  #collectBindings(node: ts.Node): void {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      const name = node.name.text;
+      this.#bindings.set(name, (this.#bindings.get(name) ?? 0) + 1);
+      this.#variables.add(name);
+    } else if (ts.isImportSpecifier(node)) {
+      this.#bindings.set(node.name.text, (this.#bindings.get(node.name.text) ?? 0) + 1);
+      if (!node.propertyName && !node.isTypeOnly) {
+        if (node.name.text === "input") this.#hasInputImport = true;
+        if (node.name.text === "observe") this.#hasObserveImport = true;
       }
-      const bindings = statement.importClause?.namedBindings;
-      if (!bindings || !ts.isNamedImports(bindings)) continue;
-      for (const binding of bindings.elements) {
-        const symbol = this.#checker.getSymbolAtLocation(binding.name);
-        if (!symbol) continue;
-        if (binding.name.text === "input") this.#approvedInputSymbols.add(symbol);
-        if (binding.name.text === "observe") this.#approvedObserveSymbols.add(symbol);
-      }
-    }
-  }
-
-  #collectSourceBindingNames(node: ts.Node): void {
-    if (ts.isVariableDeclaration(node) || ts.isParameter(node)) {
-      this.#recordBindingName(node.name);
+    } else if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
+      this.#bindings.set(node.name.text, (this.#bindings.get(node.name.text) ?? 0) + 1);
     } else if (
-      ts.isFunctionDeclaration(node) ||
-      ts.isClassDeclaration(node) ||
-      ts.isEnumDeclaration(node) ||
-      ts.isModuleDeclaration(node) ||
-      ts.isInterfaceDeclaration(node) ||
-      ts.isTypeAliasDeclaration(node)
+      ts.isCatchClause(node) &&
+      node.variableDeclaration &&
+      ts.isIdentifier(node.variableDeclaration.name)
     ) {
-      if (node.name && ts.isIdentifier(node.name)) {
-        this.#sourceBindingNames.add(node.name.text);
-      }
-    } else if (
-      ts.isImportSpecifier(node) ||
-      ts.isNamespaceImport(node) ||
-      ts.isImportEqualsDeclaration(node)
-    ) {
-      this.#sourceBindingNames.add(node.name.text);
-    } else if (ts.isImportClause(node) && node.name) {
-      this.#sourceBindingNames.add(node.name.text);
+      const name = node.variableDeclaration.name.text;
+      this.#bindings.set(name, (this.#bindings.get(name) ?? 0) + 1);
     }
-    ts.forEachChild(node, (child) => this.#collectSourceBindingNames(child));
-  }
-
-  #recordBindingName(name: ts.BindingName): void {
-    if (ts.isIdentifier(name)) {
-      this.#sourceBindingNames.add(name.text);
-      return;
-    }
-    for (const element of name.elements) {
-      if (!ts.isOmittedExpression(element)) this.#recordBindingName(element.name);
-    }
-  }
-
-  #collectAssignedValues(node: ts.Node): void {
-    if (
-      ts.isBinaryExpression(node) &&
-      node.operatorToken.kind === ts.SyntaxKind.EqualsToken
-    ) {
-      const target = this.#unwrap(node.left);
-      if (ts.isIdentifier(target) && this.#isLocalVariable(target)) {
-        const symbol = this.#checker.getSymbolAtLocation(target);
-        if (symbol) {
-          const assignedValues = this.#assignedValues.get(symbol) ?? [];
-          assignedValues.push(node.right);
-          this.#assignedValues.set(symbol, assignedValues);
-        }
-      }
-    }
-    ts.forEachChild(node, (child) => this.#collectAssignedValues(child));
+    ts.forEachChild(node, (child) => this.#collectBindings(child));
   }
 
   #visit(node: ts.Node): void {
@@ -287,6 +222,8 @@ class StrictSubsetVerifier {
       );
     } else if (ts.isVariableDeclaration(node)) {
       this.#checkVariableDeclaration(node);
+    } else if (ts.isIdentifier(node)) {
+      this.#checkIdentifier(node);
     } else if (this.#isUnsupportedDeclaration(node)) {
       this.#reject(
         node,
@@ -332,16 +269,6 @@ class StrictSubsetVerifier {
       return;
     }
     if (this.#isPassiveConsoleCall(call)) {
-      if (call.arguments.length > 1 &&
-        !call.arguments.every((argument) =>
-          this.#isPrimitiveExpression(argument)
-        )) {
-        this.#reject(
-          call,
-          "external-call",
-          "Multiple console values must each be a syntax-proven primitive to avoid formatting coercion."
-        );
-      }
       return;
     }
     const expression = this.#unwrap(call.expression);
@@ -397,7 +324,7 @@ class StrictSubsetVerifier {
       return;
     }
     const target = this.#unwrap(node.left);
-    if (ts.isIdentifier(target) && this.#isLocalVariable(target)) return;
+    if (ts.isIdentifier(target) && this.#variables.has(target.text)) return;
     this.#reject(
       node.left,
       "external-write",
@@ -406,37 +333,16 @@ class StrictSubsetVerifier {
   }
 
   #checkBinaryOperation(node: ts.BinaryExpression): void {
-    if (SAFE_BINARY_OPERATORS.has(node.operatorToken.kind)) return;
     if (IMPLICIT_CALL_BINARY_OPERATORS.has(node.operatorToken.kind)) {
       this.#reject(
         node,
         "external-call",
         "The in and instanceof operators are outside the strict subset."
       );
-      return;
     }
-    if (this.#isPrimitiveExpression(node.left) &&
-      this.#isPrimitiveExpression(node.right)) {
-      return;
-    }
-    this.#reject(
-      node,
-      "external-call",
-      "Coercive operators require operands proven primitive from source syntax."
-    );
   }
 
-  #checkUnaryOperation(node: ts.PrefixUnaryExpression): void {
-    if (node.operator === ts.SyntaxKind.ExclamationToken) {
-      return;
-    }
-    if (this.#isPrimitiveExpression(node.operand)) return;
-    this.#reject(
-      node,
-      "external-call",
-      "Coercive unary operators require an operand proven primitive from source syntax."
-    );
-  }
+  #checkUnaryOperation(_node: ts.PrefixUnaryExpression): void {}
 
   #checkVariableDeclaration(node: ts.VariableDeclaration): void {
     if (!ts.isIdentifier(node.name)) {
@@ -463,6 +369,23 @@ class StrictSubsetVerifier {
         "Resource declarations are outside the strict subset."
       );
     }
+  }
+
+  #checkIdentifier(node: ts.Identifier): void {
+    if (this.#bindings.has(node.text) ||
+      node.text === "console" ||
+      node.text === "Infinity" ||
+      node.text === "NaN" ||
+      node.text === "undefined" ||
+      this.#isSyntacticName(node) ||
+      this.#isTypeIdentifier(node)) {
+      return;
+    }
+    this.#reject(
+      node,
+      "external-call",
+      "Strict source must read application state through observe(...)."
+    );
   }
 
   #isApprovedCapabilityImport(node: ts.ImportDeclaration): boolean {
@@ -499,12 +422,14 @@ class StrictSubsetVerifier {
 
   #isApprovedInputCall(call: ts.CallExpression): boolean {
     const callee = this.#unwrap(call.expression);
-    if (!ts.isIdentifier(callee)) return false;
-    const symbol = this.#checker.getSymbolAtLocation(callee);
-    return Boolean(symbol && this.#approvedInputSymbols.has(symbol));
+    return ts.isIdentifier(callee) && callee.text === "input" &&
+      this.#hasInputImport && this.#bindings.get("input") === 1;
   }
 
   #checkInputCall(call: ts.CallExpression): void {
+    if (!ts.isAwaitExpression(call.parent)) {
+      this.#reject(call, "external-call", "Input calls must be awaited in strict source.");
+    }
     if (call.arguments.length !== 1) {
       this.#reject(
         call,
@@ -543,17 +468,21 @@ class StrictSubsetVerifier {
       );
       return;
     }
-    const literalError = literalInputCommandError(command);
-    if (literalError) {
-      this.#reject(call, "external-call", literalError);
+    const literal = literalValue(command);
+    if (literal.literal) {
+      try {
+        parseInputCommand(literal.value);
+      } catch (error) {
+        if (!(error instanceof Error)) throw error;
+        this.#reject(call, "external-call", error.message);
+      }
     }
   }
 
   #isApprovedObserveCall(call: ts.CallExpression): boolean {
     const callee = this.#unwrap(call.expression);
-    if (!ts.isIdentifier(callee)) return false;
-    const symbol = this.#checker.getSymbolAtLocation(callee);
-    return Boolean(symbol && this.#approvedObserveSymbols.has(symbol));
+    return ts.isIdentifier(callee) && callee.text === "observe" &&
+      this.#hasObserveImport && this.#bindings.get("observe") === 1;
   }
 
   #checkObservationCall(call: ts.CallExpression): void {
@@ -569,92 +498,13 @@ class StrictSubsetVerifier {
 
   #observationProjectionKeys(call: ts.CallExpression): Set<string> | undefined {
     if (call.arguments.length !== 1) return undefined;
-    const projection = this.#unwrap(call.arguments[0]);
-    if (!ts.isObjectLiteralExpression(projection) ||
-      projection.properties.length === 0 ||
-      projection.properties.length > MAXIMUM_OBSERVATION_FIELDS) {
+    const projection = literalValue(call.arguments[0]);
+    if (!projection.literal) return undefined;
+    try {
+      return new Set(validateObservationProjection(projection.value).keys());
+    } catch {
       return undefined;
     }
-    const keys = new Set<string>();
-    for (const property of projection.properties) {
-      if (!ts.isPropertyAssignment(property)) return undefined;
-      const key = this.#literalPropertyName(property.name);
-      if (!key || FORBIDDEN_OBSERVATION_KEYS.has(key) || keys.has(key)) {
-        return undefined;
-      }
-      if (!this.#isObservationField(property.initializer)) return undefined;
-      keys.add(key);
-    }
-    return keys;
-  }
-
-  #isObservationField(expression: ts.Expression): boolean {
-    const field = this.#unwrap(expression);
-    if (!ts.isObjectLiteralExpression(field) ||
-      field.properties.length < 2 || field.properties.length > 4) {
-      return false;
-    }
-    let kindFound = false;
-    let nullableFound = false;
-    let nullable = false;
-    let optionalFound = false;
-    let optional = false;
-    let pathFound = false;
-    for (const property of field.properties) {
-      if (!ts.isPropertyAssignment(property)) return false;
-      const name = this.#literalPropertyName(property.name);
-      if (name === "kind" && !kindFound) {
-        const value = this.#unwrap(property.initializer);
-        if (!ts.isStringLiteral(value) || !OBSERVATION_KINDS.has(value.text)) {
-          return false;
-        }
-        kindFound = true;
-        continue;
-      }
-      if (name === "nullable" && !nullableFound) {
-        const value = this.#unwrap(property.initializer);
-        if (value.kind !== ts.SyntaxKind.TrueKeyword &&
-          value.kind !== ts.SyntaxKind.FalseKeyword) {
-          return false;
-        }
-        nullableFound = true;
-        nullable = value.kind === ts.SyntaxKind.TrueKeyword;
-        continue;
-      }
-      if (name === "optional" && !optionalFound) {
-        const value = this.#unwrap(property.initializer);
-        if (value.kind !== ts.SyntaxKind.TrueKeyword &&
-          value.kind !== ts.SyntaxKind.FalseKeyword) {
-          return false;
-        }
-        optionalFound = true;
-        optional = value.kind === ts.SyntaxKind.TrueKeyword;
-        continue;
-      }
-      if (name === "path" && !pathFound) {
-        if (!this.#isObservationPath(property.initializer)) return false;
-        pathFound = true;
-        continue;
-      }
-      return false;
-    }
-    return kindFound && pathFound && (!optional || nullable);
-  }
-
-  #isObservationPath(expression: ts.Expression): boolean {
-    const path = this.#unwrap(expression);
-    if (!ts.isArrayLiteralExpression(path) || path.elements.length === 0 ||
-      path.elements.length > MAXIMUM_OBSERVATION_PATH_DEPTH) {
-      return false;
-    }
-    return path.elements.every((element) => {
-      if (ts.isStringLiteral(element)) {
-        return element.text.length > 0 &&
-          !FORBIDDEN_OBSERVATION_KEYS.has(element.text);
-      }
-      return ts.isNumericLiteral(element) &&
-        Number.isSafeInteger(Number(element.text)) && Number(element.text) >= 0;
-    });
   }
 
   #literalPropertyName(name: ts.PropertyName): string | undefined {
@@ -686,150 +536,6 @@ class StrictSubsetVerifier {
     return false;
   }
 
-  #isPrimitiveExpression(
-    expression: ts.Expression,
-    seen = new Set<ts.Symbol>(),
-    allowedSelfReference?: ts.Symbol
-  ): boolean {
-    const value = this.#unwrap(expression);
-    if (
-      ts.isBigIntLiteral(value) ||
-      ts.isNoSubstitutionTemplateLiteral(value) ||
-      ts.isNumericLiteral(value) ||
-      ts.isStringLiteral(value) ||
-      value.kind === ts.SyntaxKind.FalseKeyword ||
-      value.kind === ts.SyntaxKind.NullKeyword ||
-      value.kind === ts.SyntaxKind.TrueKeyword
-    ) {
-      return true;
-    }
-    if (ts.isIdentifier(value)) {
-      if (this.#isGlobalPrimitive(value)) return true;
-      const symbol = this.#checker.getSymbolAtLocation(value);
-      if (!symbol) return false;
-      if (seen.has(symbol)) return symbol === allowedSelfReference;
-      seen.add(symbol);
-      const declarations = symbol.getDeclarations() ?? [];
-      if (declarations.length === 0) return false;
-      const assignedValues = this.#assignedValues.get(symbol) ?? [];
-      return declarations.every((declaration) => {
-        if (!ts.isVariableDeclaration(declaration) ||
-          !declaration.initializer ||
-          !ts.isVariableDeclarationList(declaration.parent)) {
-          return false;
-        }
-        const declarationFlags = declaration.parent.flags;
-        const isConstant = (declarationFlags & ts.NodeFlags.Const) !== 0;
-        const isBlockScopedVariable = (declarationFlags & ts.NodeFlags.Let) !== 0;
-        if (!isConstant && !isBlockScopedVariable) return false;
-        if (!this.#isPrimitiveExpression(
-          declaration.initializer,
-          new Set(seen)
-        )) {
-          return false;
-        }
-        if (isConstant) return assignedValues.length === 0;
-        return assignedValues.every((assignedValue) =>
-          this.#isPrimitiveExpression(assignedValue, new Set(seen), symbol)
-        );
-      });
-    }
-    if (this.#isObservedPrimitiveAccess(value)) return true;
-    if (ts.isPrefixUnaryExpression(value)) {
-      if (value.operator === ts.SyntaxKind.ExclamationToken) {
-        return true;
-      }
-      return this.#isPrimitiveExpression(
-        value.operand,
-        seen,
-        allowedSelfReference
-      );
-    }
-    if (ts.isTypeOfExpression(value) || ts.isVoidExpression(value)) return true;
-    if (ts.isBinaryExpression(value)) {
-      if (
-        value.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
-        value.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken
-      ) {
-        return true;
-      }
-      return this.#isPrimitiveExpression(
-        value.left,
-        new Set(seen),
-        allowedSelfReference
-      ) && this.#isPrimitiveExpression(
-        value.right,
-        new Set(seen),
-        allowedSelfReference
-      );
-    }
-    if (ts.isConditionalExpression(value)) {
-      return this.#isPrimitiveExpression(
-        value.whenTrue,
-        new Set(seen),
-        allowedSelfReference
-      ) && this.#isPrimitiveExpression(
-        value.whenFalse,
-        new Set(seen),
-        allowedSelfReference
-      );
-    }
-    return false;
-  }
-
-  #isObservedPrimitiveAccess(expression: ts.Expression): boolean {
-    let receiver: ts.Expression;
-    let key: string;
-    if (ts.isPropertyAccessExpression(expression)) {
-      receiver = this.#unwrap(expression.expression);
-      key = expression.name.text;
-    } else if (ts.isElementAccessExpression(expression)) {
-      receiver = this.#unwrap(expression.expression);
-      if (!expression.argumentExpression) return false;
-      const argument = this.#unwrap(expression.argumentExpression);
-      if (!ts.isStringLiteral(argument) &&
-        !ts.isNoSubstitutionTemplateLiteral(argument)) {
-        return false;
-      }
-      key = argument.text;
-    } else {
-      return false;
-    }
-    if (ts.isCallExpression(receiver) &&
-      this.#isApprovedObserveCall(receiver)) {
-      return this.#observationProjectionKeys(receiver)?.has(key) === true;
-    }
-    if (!ts.isIdentifier(receiver)) return false;
-    const symbol = this.#checker.getSymbolAtLocation(receiver);
-    const declarations = symbol?.getDeclarations() ?? [];
-    if (declarations.length === 0) return false;
-    const assignedValues = symbol ? this.#assignedValues.get(symbol) ?? [] : [];
-    const declarationsAreProjected = declarations.every((declaration) => {
-      if (!ts.isVariableDeclaration(declaration) || !declaration.initializer ||
-        !ts.isVariableDeclarationList(declaration.parent)) {
-        return false;
-      }
-      const flags = declaration.parent.flags;
-      const isConstant = (flags & ts.NodeFlags.Const) !== 0;
-      const isBlockScopedVariable = (flags & ts.NodeFlags.Let) !== 0;
-      if (!isConstant && !isBlockScopedVariable) {
-        return false;
-      }
-      if (!this.#observationHasKey(declaration.initializer, key)) return false;
-      return isBlockScopedVariable || assignedValues.length === 0;
-    });
-    return declarationsAreProjected && assignedValues.every((assignedValue) =>
-      this.#observationHasKey(assignedValue, key)
-    );
-  }
-
-  #observationHasKey(expression: ts.Expression, key: string): boolean {
-    const value = this.#unwrap(expression);
-    return ts.isCallExpression(value) &&
-      this.#isApprovedObserveCall(value) &&
-      this.#observationProjectionKeys(value)?.has(key) === true;
-  }
-
   #isStaticPropertyKey(expression: ts.Expression): boolean {
     const value = this.#unwrap(expression);
     return ts.isBigIntLiteral(value) ||
@@ -838,27 +544,27 @@ class StrictSubsetVerifier {
       ts.isStringLiteral(value);
   }
 
-  #isLocalVariable(identifier: ts.Identifier): boolean {
-    const declarations = this.#checker.getSymbolAtLocation(identifier)
-      ?.getDeclarations() ?? [];
-    return declarations.length > 0 && declarations.every((declaration) =>
-      ts.isVariableDeclaration(declaration) && !this.#isAmbient(declaration)
-    );
-  }
-
   #isGlobalIdentifier(identifier: ts.Identifier): boolean {
-    if (this.#sourceBindingNames.has(identifier.text)) return false;
-    const symbol = this.#checker.getSymbolAtLocation(identifier);
-    return !symbol || symbol.getDeclarations()?.every(
-      (declaration) => declaration.getSourceFile() !== this.#sourceFile
-    ) === true;
+    return !this.#bindings.has(identifier.text);
   }
 
-  #isGlobalPrimitive(identifier: ts.Identifier): boolean {
-    return this.#isGlobalIdentifier(identifier) &&
-      (identifier.text === "Infinity" ||
-        identifier.text === "NaN" ||
-        identifier.text === "undefined");
+  #isSyntacticName(node: ts.Identifier): boolean {
+    const parent = node.parent;
+    return (ts.isPropertyAccessExpression(parent) && parent.name === node) ||
+      (ts.isPropertyAssignment(parent) && parent.name === node) ||
+      (ts.isImportSpecifier(parent) && (parent.name === node || parent.propertyName === node)) ||
+      (ts.isVariableDeclaration(parent) && parent.name === node) ||
+      (ts.isLabeledStatement(parent) && parent.label === node) ||
+      ((ts.isBreakStatement(parent) || ts.isContinueStatement(parent)) && parent.label === node);
+  }
+
+  #isTypeIdentifier(node: ts.Identifier): boolean {
+    let current: ts.Node | undefined = node.parent;
+    while (current && !ts.isExpression(current) && !ts.isStatement(current)) {
+      if (ts.isTypeNode(current)) return true;
+      current = current.parent;
+    }
+    return false;
   }
 
   #isAmbient(node: ts.Node): boolean {
@@ -919,12 +625,23 @@ export function verifyStrictSource(
   options: VerifyStrictSourceOptions = {}
 ): StrictSourceVerification {
   const language = options.language ?? "typescript";
-  const { checker, program, sourceFile } = createStrictProgram(source, language);
-  const parseIssues = program
-    .getSyntacticDiagnostics(sourceFile)
+  const { diagnostics, sourceFile } = createStrictProgram(source, language);
+  const parseIssues = diagnostics
     .map((diagnostic) => diagnosticIssue(sourceFile, diagnostic));
   if (parseIssues.length > 0) return { issues: parseIssues, ok: false };
 
-  const issues = new StrictSubsetVerifier(sourceFile, checker).verify();
+  const issues = new StrictSubsetVerifier(sourceFile).verify();
   return { issues, ok: issues.length === 0 };
+}
+
+export function assertStrictSource(
+  source: string,
+  options: VerifyStrictSourceOptions = {}
+): void {
+  const result = verifyStrictSource(source, options);
+  if (result.ok) return;
+  const details = result.issues.map((issue) =>
+    `${issue.code} at ${issue.start.line}:${issue.start.column}: ${issue.message}`
+  );
+  throw new Error(`Strict source verification failed: ${details.join("; ")}`);
 }

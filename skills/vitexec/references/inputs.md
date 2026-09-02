@@ -2,7 +2,7 @@
 
 Use strict input when an effect must reach the application through the same browser keyboard or pointer path as a person. Strict source still runs in the live page, but Vit Exec verifies it before execution.
 
-The effect boundary is simple: only direct `input(...)` calls may act. `observe(...)` and other permitted reads are observations only. Do not assign into application state, call its mutation methods, dispatch synthetic DOM events, or bypass its normal interaction path.
+The effect boundary is simple: only direct `input(...)` calls may act, and strict application state comes from `observe(...)`. Do not assign into application state, call its mutation methods, dispatch synthetic DOM events, or bypass its normal interaction path.
 
 ## Start from the public contract
 
@@ -71,7 +71,7 @@ Choose the least stateful command that preserves the interaction's physical sema
 
 Selector clicks must resolve to exactly one visible element. Before a timed or irreversible phase, prove the selector is unique from the app's visible structure or source; do not guess broad selectors such as `button`, `canvas`, or `[role="button"]`. Coordinate clicks and other absolute coordinates use CSS pixels in the viewport. Relative movement starts at the current physical pointer position and, under pointer lock, produces relative deltas.
 
-`mouse.move` and `mouse.moveTo` are settled trajectories: awaiting one blocks until its endpoint is reached or a newer trajectory supersedes it. Use one when reaching that endpoint is a precondition for the next decision. Their receipt reports the applied delta, duration, steps, and whether they were superseded. One request describes the complete trajectory; do not serialize a browser round trip per point.
+`mouse.move` and `mouse.moveTo` are settled trajectories: awaiting one blocks until its endpoint is reached. Use one when reaching that endpoint is a precondition for the next decision. One request describes the complete trajectory; do not serialize a browser round trip per point.
 
 `mouse.moveLatest` is an adaptive-movement option, not the default pointer move. It returns after its first real pointer event, while movement continues independently. A later call discards the unapplied remainder of the previous one. Use it only when the destination may change before a settled move completes and unapplied intermediate motion has no application meaning. Awaiting a settled move on every iteration serializes observation and movement; `moveLatest` lets the source observe fresh feedback while movement continues. Its receipt proves one pointer event was delivered, not that a frame rendered, the destination was reached, or application state changed. The receipt's `leaseMs` starts at that first event. Replacing the destination renews the lease; otherwise movement stops when it expires without a separate notification. While it is active, `click`, `move`, and `moveTo` fail with `InputBusyError`; call `mouse.stop` before switching to one of them.
 
@@ -104,8 +104,7 @@ The initial strict language is deliberately small and syntactic:
 - exact direct imports of `input` and `observe` from `vitexec`;
 - direct `observe()` calls or literal primitive projections;
 - direct awaited `input(...)` calls;
-- passive `console.log(...)` calls; multiple values must each be syntax-proven primitives;
-- local primitive computation, `if`, and `while` control flow;
-- passive reads allowed by the verifier.
+- passive `console.log(...)` calls;
+- local computation, `if`, and `while` control flow over provider observations.
 
 Helpers, callbacks, array iteration methods, iterators, object construction, dynamic imports, external calls, and writes are outside the subset. This is a fail-closed source policy, not a claim of whole-language semantic purity. If verification rejects a convenient form, simplify the submitted source rather than bypassing the verifier.

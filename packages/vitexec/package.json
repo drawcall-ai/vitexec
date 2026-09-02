@@ -23,10 +23,6 @@
       "types": "./dist/cli.d.ts",
       "import": "./dist/cli.js"
     },
-    "./strict": {
-      "types": "./dist/strict/index.d.ts",
-      "import": "./dist/strict/index.js"
-    },
     "./observe/host": {
       "types": "./dist/observe/host.d.ts",
       "browser": "./dist/observe/host.js",

@@ -1,8 +1,4 @@
-export type StrictSourceLanguage =
-  | "javascript"
-  | "javascript-jsx"
-  | "typescript"
-  | "typescript-jsx";
+export type StrictSourceLanguage = "javascript" | "typescript";
 
 export type StrictSourceIssueCode =
   | "escape-hatch"

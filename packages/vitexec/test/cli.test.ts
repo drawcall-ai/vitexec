@@ -118,7 +118,7 @@ describe("vitexec CLI runner", () => {
     });
 
     expect(output).toContain(
-      '[log] held {"edgeEmitted":true,"expiresAt":null,"releaseAfterMs":null,"status":"held"}'
+      '[log] held {"edgeEmitted":true,"expiresAt":null,"status":"held"}'
     );
     expect(output).toContain("[log] received [\"x\"]");
   });

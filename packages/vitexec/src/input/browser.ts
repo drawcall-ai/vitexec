@@ -2,12 +2,6 @@ import type {
   InputBindingResult
 } from "./binding.js";
 import type {
-  InputCompleted,
-  InputDownCommand,
-  InputHeldResult,
-  InputMouseMoveLatestCommand,
-  InputMouseMoveLatestResult,
-  InputMouseStopCommand,
   InputPhysicalCommand,
   InputResult,
   InputWaitCommand
@@ -15,20 +9,12 @@ import type {
 import { parseInputCommand } from "./parse.js";
 
 export type {
-  InputCompleted,
-  InputDownCommand,
-  InputHeldResult,
   InputMouseButton,
-  InputMouseClickCommand,
-  InputMouseMoveLatestCommand,
-  InputMouseMoveLatestResult,
-  InputMouseStopCommand,
   InputPhysicalCommand,
-  InputResult,
-  InputWaitCommand
+  InputResult
 } from "./types.js";
 
-async function waitInBrowser(command: InputWaitCommand): Promise<InputCompleted> {
+async function waitInBrowser(command: InputWaitCommand): Promise<InputResult> {
   await new Promise<void>((resolve) => {
     globalThis.setTimeout(resolve, command.durationMs);
   });
@@ -47,9 +33,6 @@ async function waitInBrowser(command: InputWaitCommand): Promise<InputCompleted>
  * pacing, interpolation, leases, and physical speed and duration limits.
  * A receipt proves input delivery, not an application state transition.
  */
-export function input(command: InputDownCommand): Promise<InputHeldResult>;
-export function input(command: InputMouseMoveLatestCommand): Promise<InputMouseMoveLatestResult>;
-export function input(command: InputMouseStopCommand): Promise<InputCompleted>;
 export function input(command: InputPhysicalCommand): Promise<InputResult>;
 export async function input(command: InputPhysicalCommand): Promise<InputBindingResult> {
   const binding = globalThis.__vitexecInput_v1__;

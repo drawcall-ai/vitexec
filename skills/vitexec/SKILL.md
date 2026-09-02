@@ -46,7 +46,7 @@ Vit Exec resolves an existing `.ts`, `.tsx`, `.js`, `.jsx`, `.mts`, or `.mjs` ar
 
 ## Guidance
 
-- Treat application reads as observations and assertions, never as a route to mutation.
+- In strict mode, read application state through `observe(...)`; use ordinary mode for other trusted diagnostic reads.
 - Default to the app's normal user-facing route. Do not switch to proof, demo, capture, fixture, or example pages unless the user asked for one; those pages may have different lifecycle and timing behavior.
 - In strict mode, start runtime discovery with `console.log(observe())`; it returns the provider snapshot or fails visibly. Then project only the primitive fields needed for the next decision and its verification.
 - Browser-root imports such as `/src/store.ts` are available in ordinary mode when no provider exists.

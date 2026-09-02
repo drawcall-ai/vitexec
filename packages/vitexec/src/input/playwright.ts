@@ -42,7 +42,6 @@ type Held = {
 
 type Timer = {
   cancel: () => void;
-  durationMs: number;
   expiresAt: number;
   task: Promise<void>;
 };
@@ -567,7 +566,6 @@ function heldResult(edgeEmitted: boolean, release?: Timer): InputHeldResult {
   return {
     edgeEmitted,
     expiresAt: release?.expiresAt ?? null,
-    releaseAfterMs: release?.durationMs ?? null,
     status: "held"
   };
 }
@@ -595,7 +593,6 @@ function schedule(
       timeout = undefined;
       finish();
     },
-    durationMs,
     expiresAt: Date.now() + durationMs,
     task
   };

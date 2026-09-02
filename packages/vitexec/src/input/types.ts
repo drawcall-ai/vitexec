@@ -93,11 +93,6 @@ export type InputPhysicalCommand =
   | InputMouseMoveLatestCommand
   | InputMouseStopCommand;
 
-export type InputDownCommand = Extract<
-  InputPhysicalCommand,
-  { type: "keyboard.down" | "mouse.down" }
->;
-
 export type InputMouseMoveLatestResult = {
   leaseMs: number;
   status: "latest.started";
@@ -110,7 +105,6 @@ export type InputCompleted = {
 export type InputHeldResult = {
   edgeEmitted: boolean;
   expiresAt: number | null;
-  releaseAfterMs: number | null;
   status: "held";
 };
 

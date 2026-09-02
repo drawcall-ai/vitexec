@@ -30,15 +30,11 @@ function selectedValue(
         `${JSON.stringify(traversed)} before ${JSON.stringify(segment)}.`
       );
     }
-    const descriptor = Object.getOwnPropertyDescriptor(value, segment);
-    if (!descriptor) {
+    if (!Object.hasOwn(value, segment)) {
       if (optional) return null;
       throw new Error(`Observation path requires an own data property ${JSON.stringify(String(segment))}.`);
     }
-    if (!("value" in descriptor)) {
-      throw new Error(`Observation path requires an own data property ${JSON.stringify(String(segment))}.`);
-    }
-    value = descriptor.value;
+    value = value[segment as keyof typeof value];
     traversed.push(segment);
   }
   return value;

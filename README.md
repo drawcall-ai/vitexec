@@ -135,7 +135,7 @@ No debug panel. No test-only app code. No guessing from pixels alone.
 
 Strict mode keeps execution in the live page but verifies the submitted source
 before it runs. The initial policy is a small, fail-closed syntactic subset:
-read-only observation through an app-installed provider, local primitive control
+read-only observation through an app-installed provider, local control
 flow, passive logging, and direct Playwright-backed `input(...)` calls.
 
 ```sh
@@ -168,8 +168,8 @@ Applications expose trusted read-only state with
 serialized JSON snapshot; strict source may project validated primitive paths.
 
 Strict mode is not a sandbox or a proof of arbitrary JavaScript semantics. Its
-trusted boundaries are the observation provider, passive application reads, and
-the Playwright input host. Unsupported syntax and invalid commands fail visibly.
+trusted boundaries are the observation provider and the Playwright input host.
+Unsupported syntax and invalid commands fail visibly.
 
 ## Use It For
 
