@@ -21,6 +21,7 @@ import {
 } from "playwright";
 import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
+import { runStrictScript } from "./strict/script.js";
 
 export type { VitexecModuleExtension };
 
@@ -39,6 +40,7 @@ export const VITEXEC_ENV = {
   performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
   record: "VITEXEC_RECORD",
   screenshot: "VITEXEC_SCREENSHOT",
+  strict: "VITEXEC_STRICT",
   touch: "VITEXEC_TOUCH",
   timeout: "VITEXEC_TIMEOUT",
   viewport: "VITEXEC_VIEWPORT"
@@ -67,6 +69,11 @@ export type RunVitexecOptions = {
   recordPath?: string;
   root?: string;
   screenshotPath?: string;
+  /**
+   * Run the script in the vitexec process against the app's normal page, with
+   * read-only observation and paced real input as its only reach into the app.
+   */
+  strict?: boolean;
   timeoutMs?: number;
   /** Enable touch input and a coarse pointer in contexts Vitexec creates. */
   touch?: boolean;
@@ -106,6 +113,7 @@ type CliOptions = {
   performanceTrace?: string;
   record?: string;
   screenshot?: string;
+  strict?: boolean;
   touch?: boolean;
   viewport?: string;
   timeout?: number;
@@ -119,7 +127,7 @@ export async function* runVitexec(
   const server = await startViteServer(id, code, options);
 
   try {
-    yield* runVitexecInServer(server, id, options);
+    yield* runVitexecInServer(server, id, code, options);
   } finally {
     await server.close();
   }
@@ -190,6 +198,7 @@ function isFileMissingError(error: unknown): boolean {
 async function* runVitexecInServer(
   server: ViteDevServer,
   id: string,
+  code: string,
   options: RunVitexecOptions
 ): AsyncGenerator<string> {
   const abort = new AbortController();
@@ -197,7 +206,7 @@ async function* runVitexecInServer(
   const log = (line: string) => {
     if (!lines.destroyed) lines.push(line);
   };
-  const run = runVitexecInServerTask(server, id, options, log, abort.signal).then(
+  const run = runVitexecInServerTask(server, id, code, options, log, abort.signal).then(
     () => lines.push(null),
     (error) => lines.destroy(error instanceof Error ? error : new Error(String(error)))
   );
@@ -215,6 +224,7 @@ async function* runVitexecInServer(
 async function runVitexecInServerTask(
   server: ViteDevServer,
   id: string,
+  code: string,
   options: RunVitexecOptions,
   log: (line: string) => void,
   signal: AbortSignal
@@ -287,7 +297,12 @@ async function runVitexecInServerTask(
       log(`[navigation] ${response.status()} ${response.statusText()} ${response.url()}`);
     }
 
-    await injectedCodeFinished.promise;
+    if (options.strict) {
+      // Nothing is injected in strict mode; the completion promise only carries the run deadline.
+      await Promise.race([runStrictScript(code, page, cdp, log), injectedCodeFinished.promise]);
+    } else {
+      await injectedCodeFinished.promise;
+    }
     if (options.screenshotPath) {
       await saveScreenshot(page, options.screenshotPath);
       log(`[screenshot] ${options.screenshotPath}`);
@@ -386,7 +401,7 @@ async function startViteServer(
       strictPort: false,
       watch: null
     },
-    plugins: [
+    plugins: options.strict ? [] : [
       vitexec({
         directory: false,
         pages: {
@@ -1068,6 +1083,7 @@ async function main(): Promise<void> {
       "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
     )
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
+    .option("--strict", "run the script outside the page: read-only observe() plus paced real input")
     .option("--touch", "emulate touch input and a coarse pointer")
     .option("--viewport <WIDTHxHEIGHT>", "browser viewport, e.g. 390x844 for a phone (default 1280x720)")
     .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
@@ -1123,6 +1139,7 @@ export function createRunOptions(
     performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
     recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
+    strict: options.strict ?? envBoolean(env, VITEXEC_ENV.strict),
     touch: options.touch ?? envBoolean(env, VITEXEC_ENV.touch),
     viewport: options.viewport ?? envString(env, VITEXEC_ENV.viewport),
     timeoutMs: timeout === undefined ? undefined : timeout * 1000

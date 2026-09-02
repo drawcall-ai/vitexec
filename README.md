@@ -131,6 +131,34 @@ logs:
 
 No debug panel. No test-only app code. No guessing from pixels alone.
 
+## Strict mode
+
+`--strict` runs the script in the vitexec process instead of the page, so it
+can only observe the app and drive it through real input. Use it when the
+script must not change the app: playing a game as a user would, or proving a
+flow works without touching its internals.
+
+```sh
+vitexec --strict --gpu play.ts
+```
+
+```ts
+import { observe, mouse, keyboard, sleep } from "vitexec";
+
+while (!(await observe(() => window.game.ready))) await sleep(50);
+await keyboard.down("KeyW");
+await mouse.move(200, 0);
+await keyboard.up("KeyW");
+console.log(await observe(() => window.game.player.position));
+```
+
+`observe(fn, ...args)` evaluates `fn` in the page under V8's side-effect check:
+any write, timer, promise, or DOM mutation rejects. `load("/src/store.ts")`
+returns a module handle to pass into `observe`. `mouse.move`/`moveTo` glide the
+pointer as a stream of trusted events at a capped speed (3000 px/s, 125 Hz), so
+the app sees a human-like path, including `movementX/Y` under pointer lock.
+Keys and buttons held when the script ends are released.
+
 ## Use It For
 
 - Camera controls, pointer lock, drag interactions, and gamepad input
@@ -159,6 +187,7 @@ same path under `./vitexec`, and otherwise treats it as inline code. Thus
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
 | `--screenshot ./page.png` | Capture a full-page screenshot |
 | `--record ./run.webm` | Record browser video |
+| `--strict` | Run the script outside the page: read-only `observe()` plus paced real input |
 | `--cpu-profile ./cpu.cpuprofile` | Capture a Chrome/V8 CPU profile |
 | `--network-trace ./network.har` | Capture network requests as HAR |
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
@@ -180,6 +209,7 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_TIMEOUT` | `--timeout` |
 | `VITEXEC_SCREENSHOT` | `--screenshot` |
 | `VITEXEC_RECORD` | `--record` |
+| `VITEXEC_STRICT` | `--strict` |
 | `VITEXEC_CPU_PROFILE` | `--cpu-profile` |
 | `VITEXEC_NETWORK_TRACE` | `--network-trace` |
 | `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
