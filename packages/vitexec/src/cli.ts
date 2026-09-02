@@ -21,6 +21,9 @@ import {
 } from "playwright";
 import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
+import { installPlaywrightInput } from "./input/playwright.js";
+import { assertStrictSource } from "./strict/index.js";
+import type { StrictSourceLanguage } from "./strict/types.js";
 
 export type { VitexecModuleExtension };
 
@@ -39,6 +42,7 @@ export const VITEXEC_ENV = {
   performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
   record: "VITEXEC_RECORD",
   screenshot: "VITEXEC_SCREENSHOT",
+  strict: "VITEXEC_STRICT",
   touch: "VITEXEC_TOUCH",
   timeout: "VITEXEC_TIMEOUT",
   viewport: "VITEXEC_VIEWPORT"
@@ -67,6 +71,7 @@ export type RunVitexecOptions = {
   recordPath?: string;
   root?: string;
   screenshotPath?: string;
+  strict?: boolean;
   timeoutMs?: number;
   /** Enable touch input and a coarse pointer in contexts Vitexec creates. */
   touch?: boolean;
@@ -106,6 +111,8 @@ type CliOptions = {
   performanceTrace?: string;
   record?: string;
   screenshot?: string;
+  strict?: boolean;
+  strictCheck?: boolean;
   touch?: boolean;
   viewport?: string;
   timeout?: number;
@@ -115,6 +122,7 @@ export async function* runVitexec(
   code: string,
   options: RunVitexecOptions = {}
 ): AsyncGenerator<string> {
+  if (options.strict) checkStrictCode(code, options.moduleExtension ?? ".js");
   const id = randomUUID();
   const server = await startViteServer(id, code, options);
 
@@ -122,6 +130,27 @@ export async function* runVitexec(
     yield* runVitexecInServer(server, id, options);
   } finally {
     await server.close();
+  }
+}
+
+export function checkStrictCode(code: string, extension: VitexecModuleExtension): void {
+  assertStrictSource(code, {
+    language: strictLanguage(extension)
+  });
+}
+
+function strictLanguage(extension: VitexecModuleExtension): StrictSourceLanguage {
+  switch (extension) {
+    case ".js":
+    case ".mjs":
+      return "javascript";
+    case ".jsx":
+      return "javascript-jsx";
+    case ".ts":
+    case ".mts":
+      return "typescript";
+    case ".tsx":
+      return "typescript-jsx";
   }
 }
 
@@ -224,11 +253,18 @@ async function runVitexecInServerTask(
   let target: BrowserTarget | undefined;
   let cdp: CDPSession | undefined;
   let completeInjectedCode: (() => void) | undefined;
+  let inputDriver: Awaited<ReturnType<typeof installPlaywrightInput>> | undefined;
+  let inputRunFinishStarted = false;
   let performanceTrace: PerformanceTraceCapture | undefined;
   // Force-close a browser we launched if we are aborted mid-navigation; adopted
   // handles belong to the caller and are never closed here.
   const closeOwnedBrowser = () => {
     if (target?.ownsBrowser) void target.browser?.close().catch(() => undefined);
+  };
+  const finishInputRun = async () => {
+    if (!inputDriver || inputRunFinishStarted) return;
+    inputRunFinishStarted = true;
+    await inputDriver.finishRun();
   };
 
   const pendingConsoleLogs = new Set<Promise<void>>();
@@ -280,6 +316,7 @@ async function runVitexecInServerTask(
     page.on("requestfailed", onRequestFailed);
     page.on("response", onResponse);
     page.on("framenavigated", onFrameNavigated);
+    inputDriver = await installPlaywrightInput(page);
 
     const response = await navigateRunPage(page, url, timeoutMs);
     if (!response) log("[navigation] no response");
@@ -288,6 +325,7 @@ async function runVitexecInServerTask(
     }
 
     await injectedCodeFinished.promise;
+    await finishInputRun();
     if (options.screenshotPath) {
       await saveScreenshot(page, options.screenshotPath);
       log(`[screenshot] ${options.screenshotPath}`);
@@ -297,6 +335,7 @@ async function runVitexecInServerTask(
     if (!isTimeoutError(error)) throw error;
     log(`[error] timeout after ${formatDuration(timeoutMs)}: vitexec stopped waiting for the page.`);
   } finally {
+    await finishInputRun();
     await Promise.allSettled(pendingConsoleLogs);
     try {
       if (cdp && options.cpuProfilePath && !signal.aborted) {
@@ -1068,6 +1107,8 @@ async function main(): Promise<void> {
       "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
     )
     .option("--screenshot <path>", "write a full-page screenshot after the code runs")
+    .option("--strict", "verify source against the fail-closed strict subset before execution")
+    .option("--strict-check", "verify strict source without opening or executing the app")
     .option("--touch", "emulate touch input and a coarse pointer")
     .option("--viewport <WIDTHxHEIGHT>", "browser viewport, e.g. 390x844 for a phone (default 1280x720)")
     .option("--timeout <seconds>", "maximum time to wait for navigation and injected code", parseTimeoutSeconds)
@@ -1079,6 +1120,11 @@ async function main(): Promise<void> {
 
   try {
     const input = await resolveVitexecCodeInputDetails(codeParts);
+    if (options.strictCheck) {
+      checkStrictCode(input.code, input.moduleExtension);
+      process.stdout.write("Strict source verification passed.\n");
+      return;
+    }
     process.stdout.write("logs:\n");
     let hasLogs = false;
     for await (const line of runVitexec(input.code, createRunOptions(options, {
@@ -1123,6 +1169,7 @@ export function createRunOptions(
     performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
     recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
+    strict: options.strict ?? envBoolean(env, VITEXEC_ENV.strict),
     touch: options.touch ?? envBoolean(env, VITEXEC_ENV.touch),
     viewport: options.viewport ?? envString(env, VITEXEC_ENV.viewport),
     timeoutMs: timeout === undefined ? undefined : timeout * 1000

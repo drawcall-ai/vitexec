@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
 import {
+  checkStrictCode,
   createBrowserArgs,
   createRunOptions,
   createRemoteBrowserHeaders,
@@ -62,6 +63,64 @@ describe("vitexec CLI runner", () => {
     });
 
     expect(output).toBe("[log] loaded");
+  });
+
+  it("rejects source outside the strict subset before opening the app", async () => {
+    await expect(collectVitexec("window.app.mutate()", {
+      configFile: false,
+      strict: true
+    })).rejects.toThrow(
+      "Strict source verification failed: external-call at 1:1"
+    );
+  });
+
+  it("checks strict TypeScript without opening the app", () => {
+    expect(() => checkStrictCode(`
+      import { observe } from "vitexec";
+      const ready: boolean = observe({
+        ready: { kind: "boolean", path: ["ready"] }
+      }).ready;
+      console.log(ready);
+    `, ".ts")).not.toThrow();
+
+    expect(() => checkStrictCode("window.app.mutate()", ".ts"))
+      .toThrow("Strict source verification failed: external-call at 1:1");
+
+    expect(() => checkStrictCode(`
+      import { input } from "vitexec";
+      input({ type: "keyboard.down", key: "w", durationMs: 100 });
+    `, ".ts")).toThrow(
+      "Strict source verification failed: external-call"
+    );
+  });
+
+  it("hosts the public input capability through real Playwright events", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": `
+        <main>ready</main>
+        <script>
+          globalThis.receivedKeys = [];
+          addEventListener("keydown", event => globalThis.receivedKeys.push(event.key));
+        </script>
+      `
+    });
+
+    const output = await collectVitexec(`
+      import { input } from "vitexec";
+      const held = await input({ type: "keyboard.down", key: "x" });
+      await input({ type: "keyboard.up", key: "x" });
+      console.log("held", held);
+      console.log("received", globalThis.receivedKeys);
+    `, {
+      configFile: false,
+      moduleExtension: ".ts",
+      root: currentProject.root
+    });
+
+    expect(output).toContain(
+      '[log] held {"edgeEmitted":true,"expiresAt":null,"releaseAfterMs":null,"status":"held"}'
+    );
+    expect(output).toContain("[log] received [\"x\"]");
   });
 
   it("installs Chromium when the Playwright executable is missing", async () => {
@@ -1009,6 +1068,7 @@ describe("vitexec CLI runner", () => {
         [VITEXEC_ENV.performanceTrace]: "artifacts/performance.trace.json",
         [VITEXEC_ENV.record]: "artifacts/run.webm",
         [VITEXEC_ENV.screenshot]: "artifacts/page.png",
+        [VITEXEC_ENV.strict]: "true",
         [VITEXEC_ENV.timeout]: "12"
       },
       moduleExtension: ".ts"
@@ -1026,6 +1086,7 @@ describe("vitexec CLI runner", () => {
       performanceTracePath: "artifacts/performance.trace.json",
       recordPath: "artifacts/run.webm",
       screenshotPath: "artifacts/page.png",
+      strict: true,
       timeoutMs: 12_000
     });
   });
@@ -1037,6 +1098,7 @@ describe("vitexec CLI runner", () => {
         browserWsEndpoint: "wss://cli-browser.example.test/",
         gpu: false,
         path: "/cli-route",
+        strict: false,
         timeout: 3
       },
       {
@@ -1045,6 +1107,7 @@ describe("vitexec CLI runner", () => {
           [VITEXEC_ENV.browserArgs]: "[\"--env-browser-arg\"]",
           [VITEXEC_ENV.gpu]: "true",
           [VITEXEC_ENV.path]: "/env-route",
+          [VITEXEC_ENV.strict]: "true",
           [VITEXEC_ENV.timeout]: "30"
         }
       }
@@ -1053,6 +1116,7 @@ describe("vitexec CLI runner", () => {
       browserWsEndpoint: "wss://cli-browser.example.test/",
       gpu: false,
       path: "/cli-route",
+      strict: false,
       timeoutMs: 3_000
     }));
   });
@@ -1067,6 +1131,9 @@ describe("vitexec CLI runner", () => {
     expect(() => createRunOptions({}, {
       env: { [VITEXEC_ENV.gpu]: "sometimes" }
     })).toThrow("VITEXEC_GPU must be one of");
+    expect(() => createRunOptions({}, {
+      env: { [VITEXEC_ENV.strict]: "sometimes" }
+    })).toThrow("VITEXEC_STRICT must be one of");
   });
 
   it("validates browser args environment variables", () => {

@@ -1,90 +1,69 @@
 ---
 name: vitexec
-description: Use this skill when an AI agent needs to inspect, verify, debug, or profile a live Vite app by running temporary snippets inside the browser page and reading browser logs or captured artifacts. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, CPU/network/performance/heap analysis, WebXR/Three.js XR with IWER, and runtime-only behavior without editing app files.
+description: Inspect, verify, interact with, or profile a live Vite app by running temporary source in its browser page. Use for runtime state, browser logs, real keyboard or pointer input, screenshots, recordings, and performance artifacts. Do not use as a substitute for static source review or unit tests.
 ---
 
-# vitexec
+# Vit Exec
 
-Use `vitexec` when the truth lives in the running browser: client state, imported app modules, DOM, canvas/WebGL, screenshots, recordings, or browser-only errors.
+Vit Exec runs temporary source in the live Vite page's JavaScript context. It does not create a sandbox, worker, iframe, or snapshot boundary.
 
-Do not use it for questions static files, unit tests, or TypeScript can answer directly.
+Use ordinary mode for trusted diagnostic code. Use `--strict` when effects must be limited to the fail-closed strict subset: read-only observation plus approved physical input.
 
-## References
+## Strict physical input: choose the least stateful command
 
-- For mouse, keyboard, pointer lock, gamepad, or other input, read [references/inputs.md](references/inputs.md).
-- For CPU, network, performance timeline, or heap analysis, read [references/performance.md](references/performance.md).
-- For WebXR, read [references/webxr.md](references/webxr.md).
+- Use `click` or `press` for one completed activation. If another activation depends on changed application state, observe again first.
+- Use matching `down` and `up` only for an effect intended to remain continuous across later observations. `releaseAfterMs` is a fail-safe auto-release. Reissuing `down` changes only its release deadline and emits no new edge; omitting `releaseAfterMs` removes the deadline.
+- Use settled `mouse.move` or `mouse.moveTo` for one destination.
+- Use `mouse.moveLatest` only when later observations may replace unapplied movement.
+
+An input receipt proves physical delivery, not an application transition. Observe the app-owned postcondition after input. Bound loops and leases, and stop movement or release held controls on normal exit.
+
+The runtime owns pointer-movement pacing, interpolation, speed and duration limits, individual physical edge delivery, and leases. Source authorizes each activation edge. Read [references/inputs.md](references/inputs.md) for the complete command shapes, observation rules, selector constraints, and cleanup requirements.
 
 ## Workflow
 
-1. Identify the page path if it is not `/`.
-2. Write the smallest snippet that performs the user-like action or reads the browser-only state.
-3. Run `vitexec '<snippet>'` or `vitexec check.ts` for `./vitexec/check.ts`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--cpu-profile`, `--network-trace`, `--performance-trace`, `--heap-snapshot`, `--timeout`, or `--config` only when needed.
-4. Treat stdout as browser logs. It starts with `logs:`.
+1. Identify the app root and page path.
+2. Prefer an exported runtime API or installed observation provider over inferred globals.
+3. Write the smallest source that answers one question or reaches one app-owned postcondition. When reaching it depends on changing feedback, keep the complete observe → input → re-observe loop in that source.
+4. Check strict source with `npx vitexec --strict-check`; execute it with `npx vitexec --strict`.
+5. Read the emitted logs or requested artifact and decide from observed state.
 
-If `vitexec` itself is missing, install `vitexec` with the package manager already used by the project.
-
-```sh
-vitexec 'console.log("ready")'
-vitexec check-scene.ts
-```
-
-For one argument, the CLI checks the path as written, then checks it below
-`./vitexec`, then treats it as inline code.
-
-For structured state, log JSON:
+Prefer a source file when imports, input, or more than one expression are involved:
 
 ```sh
-vitexec --path /cart '
-  import { useCartStore } from "/src/store/cart.ts";
-  document.querySelector("[data-testid=add-to-cart]")?.click();
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  console.log("cart", JSON.stringify(useCartStore.getState()));
-'
+npx vitexec --path /settings vitexec/check.ts
+npx vitexec --strict-check vitexec/interact.ts
+npx vitexec --strict --path /settings vitexec/interact.ts
 ```
+
+Small trusted checks may be inline in ordinary mode:
+
+```sh
+npx vitexec 'console.log(document.title)'
+```
+
+Vit Exec resolves an existing `.ts`, `.tsx`, `.js`, `.jsx`, `.mts`, or `.mjs` argument as a file. Browser `console.log` output is forwarded to stdout. Run `npx vitexec --help` for the current option set, including `--gpu`, `--record`, `--screenshot`, `--timeout`, and `--viewport`.
 
 ## Guidance
 
-- Prefer importing exported app state over scraping DOM when state is available.
-- Use direct state reads for observation and assertions, not to bypass user interaction.
-- Use live progress logs and focused assertions to early-exit on failures and see current progress.
-- Keep logs concise; overly verbose logs become unreadable and unnecessarily fill the context.
-- Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.
-- Use `--gpu` for WebGL, canvas, Three.js, and WebXR behavior.
-- If the local machine has no usable GPU, use `--gpu --browser-ws-endpoint <ws-url>` to connect to a remote Playwright server that was started with the right host-specific GPU settings.
-- If repeated runs need the same endpoint or artifact settings, prefer `VITEXEC_*` environment variables over repeating long flags.
-- Use screenshots or recordings only when visual evidence matters.
-- Do not leave temporary code in the app when `vitexec` can inspect it from outside.
+- Treat application reads as observations and assertions, never as a route to mutation.
+- Default to the app's normal user-facing route. Do not switch to proof, demo, capture, fixture, or example pages unless the user asked for one; those pages may have different lifecycle and timing behavior.
+- In strict mode, start runtime discovery with `console.log(observe())`; it returns the provider snapshot or fails visibly. Then project only the primitive fields needed for the next decision and its verification.
+- Browser-root imports such as `/src/store.ts` are available in ordinary mode when no provider exists.
+- Use real input for effects. Do not dispatch synthetic DOM events or invoke application mutation methods as substitutes.
+- Request GPU mode only when accelerated rendering is material to the result.
+- Capture screenshots or recordings only when visual evidence matters; state what they demonstrate.
+- Keep temporary source outside the application source tree when practical.
+
+For performance capture, read [references/performance.md](references/performance.md). WebXR emulation is an ordinary-mode workflow; read [references/webxr.md](references/webxr.md).
 
 ## Project integration
 
-A Vite app can add `vitexec()` from the `vitexec` package. The plugin maps each
-top-level module in `./vitexec` to a page with the same name:
+Install the Vite plugin when the project needs a trusted observation provider or browser input transport:
 
 ```ts
+import { defineConfig } from "vite";
 import { vitexec } from "vitexec";
 
-export default {
-  plugins: [vitexec()]
-};
+export default defineConfig({ plugins: [vitexec()] });
 ```
-
-```txt
-vitexec/smoke.ts → /smoke.html
-```
-
-The mapping works in the Vite dev server and in `vite build`. Each generated page
-loads the normal `index.html` and then its vitexec script. Multiple `vitexec()`
-declarations are safe and deduplicated; conflicting page mappings fail clearly.
-
-## Reading a screenshot as proof
-
-A screenshot is only proof if you read it critically — "something rendered" is not "it works and looks right". When the evidence is a screenshot or clip, look at it for tells of unfinished work and treat any you find as a defect to fix, not as proof of done:
-
-- A character standing in a **T-pose** (or not animating) — its rig/animation isn't driving the model.
-- **Flat solid-color boxes/planes** standing in for real objects — placeholder geometry that needs a real asset or material.
-- **Untextured surfaces** (a flat-color ground, gray "clay") — missing materials.
-- Objects that **float** with no contact shadow — missing shadows or grounding.
-- A **flat, raw render** with no finishing pass.
-
-Pair the picture with state assertions: confirm the player-visible *outcome* from real app state (the count changed, the entity was removed, the animation state advanced), not just that the frame drew.
