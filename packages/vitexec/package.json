@@ -21,6 +21,10 @@
     "./cli": {
       "types": "./dist/cli.d.ts",
       "import": "./dist/cli.js"
+    },
+    "./strict": {
+      "types": "./dist/strict/api.d.ts",
+      "import": "./dist/strict/api.js"
     }
   },
   "bin": {

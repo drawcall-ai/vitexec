@@ -2,6 +2,8 @@
 
 Test through the same input path a user would use. Do not prove behavior by calling app internals that skip the interaction.
 
+When the input must be indistinguishable from a person's (pointer lock, `isTrusted`, focus rules, anti-cheat), use `--strict` and its `mouse`/`keyboard` API instead of the synthetic events below; see [strict.md](strict.md).
+
 Pattern:
 
 1. Read state to choose a target or assertion.

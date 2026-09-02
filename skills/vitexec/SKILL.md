@@ -1,6 +1,6 @@
 ---
 name: vitexec
-description: Use this skill when an AI agent needs to inspect, verify, debug, or profile a live Vite app by running temporary snippets inside the browser page and reading browser logs or captured artifacts. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, CPU/network/performance/heap analysis, WebXR/Three.js XR with IWER, and runtime-only behavior without editing app files.
+description: Use this skill when an AI agent needs to inspect, verify, debug, profile, or play through a live Vite app by running temporary scripts against the browser page and reading browser logs or captured artifacts. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, CPU/network/performance/heap analysis, WebXR/Three.js XR with IWER, runtime-only behavior without editing app files, and strict mode (`--strict`) when the script must only observe the app and drive it through real, human-paced input.
 ---
 
 # vitexec
@@ -12,6 +12,7 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 ## References
 
 - For mouse, keyboard, pointer lock, gamepad, or other input, read [references/inputs.md](references/inputs.md).
+- For strict mode (read-only observation plus real paced input), read [references/strict.md](references/strict.md).
 - For CPU, network, performance timeline, or heap analysis, read [references/performance.md](references/performance.md).
 - For WebXR, read [references/webxr.md](references/webxr.md).
 
@@ -42,6 +43,10 @@ vitexec --path /cart '
   console.log("cart", JSON.stringify(useCartStore.getState()));
 '
 ```
+
+## Strict mode
+
+Add `--strict` when the script must not change the app: playing a game as a user would, proving a flow works through real input, or any check where writing app state would be cheating. A strict script runs in the vitexec process instead of the page, so it has no DOM and no app objects; it reads through `observe(...)`, which rejects any write, and acts through `mouse`/`keyboard`, which deliver real Chromium input at a bounded human speed. Read [references/strict.md](references/strict.md) before writing one; the script shape differs from ordinary snippets.
 
 ## Guidance
 
