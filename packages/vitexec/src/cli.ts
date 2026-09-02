@@ -298,6 +298,7 @@ async function runVitexecInServerTask(
     }
 
     if (options.strict) {
+      // Nothing is injected in strict mode; the completion promise only carries the run deadline.
       await Promise.race([runStrictScript(code, page, cdp, log), injectedCodeFinished.promise]);
     } else {
       await injectedCodeFinished.promise;
