@@ -3,8 +3,10 @@ import type { Loaded, Strict } from "./api.js";
 
 // Reads are evaluated through V8's debug-evaluate side-effect check: any store
 // to pre-existing state, timer, promise, or DOM mutation aborts the call, so a
-// strict script can inspect the app but never change it.
-const OBSERVE_TIMEOUT_MS = 2000;
+// strict script can inspect the app but never change it. There is deliberately
+// no watchdog: Runtime.terminateExecution would kill whatever page code is
+// running when it fires, including the app's own boot; a runaway read is
+// bounded by the run timeout instead.
 const SIDE_EFFECT_MARKER = "Possible side-effect in debug-evaluate";
 
 export type Observer = Pick<Strict, "observe" | "load">;
@@ -29,14 +31,13 @@ export async function createObserver(cdp: CDPSession): Promise<Observer> {
   }
 
   const observe: Strict["observe"] = async (fn, ...args) => {
-    const call = cdp.send("Runtime.callFunctionOn", {
+    const result = await cdp.send("Runtime.callFunctionOn", {
       functionDeclaration: fn.toString(),
       objectId: windowId,
       arguments: args.map((arg) => callArgument(arg, modules)),
       returnByValue: true,
       throwOnSideEffect: true
     });
-    const result = await withTimeout(call, cdp, OBSERVE_TIMEOUT_MS);
     if (!result.exceptionDetails) return result.result.value as ReturnType<typeof fn>;
 
     const description = describe(result.exceptionDetails);
@@ -66,24 +67,6 @@ function callArgument(
 function isLoaded(value: unknown): value is Loaded<unknown> {
   return typeof value === "object" && value !== null && "specifier" in value &&
     typeof value.specifier === "string";
-}
-
-// A tight loop inside `fn` would otherwise hang the run; terminate it so the
-// script sees an error and the page keeps running.
-async function withTimeout<T>(call: Promise<T>, cdp: CDPSession, ms: number): Promise<T> {
-  let terminated = false;
-  const timer = setTimeout(() => {
-    terminated = true;
-    void cdp.send("Runtime.terminateExecution").catch(() => undefined);
-  }, ms);
-  try {
-    return await call;
-  } catch (error) {
-    if (terminated) throw new Error(`observe() ran longer than ${ms}ms and was terminated.`);
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 function describe(details: { exception?: { description?: string }; text: string }): string {

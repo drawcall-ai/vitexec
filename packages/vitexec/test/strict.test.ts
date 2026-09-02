@@ -74,16 +74,6 @@ describe("strict mode", () => {
     expect(output).toContain("[log] missing true");
   });
 
-  it("terminates an observe() that never returns", async () => {
-    project = await createTempViteProject(APP);
-    const output = await runStrict(`
-      await observe(() => { while (true) {} }).catch((error) => console.log(error.message));
-      console.log("still", await observe(() => window.app.score));
-    `);
-    expect(output).toContain("ran longer than");
-    expect(output).toContain("[log] still 1");
-  });
-
   it("delivers paced trusted pointer paths and releases held input", async () => {
     project = await createTempViteProject(APP);
     const output = await runStrict(`
