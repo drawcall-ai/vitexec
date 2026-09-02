@@ -37,6 +37,7 @@ Input goes through Playwright as trusted Chromium events, so the app's own liste
 - Under pointer lock the app sees `movementX/Y` per event and the position is unbounded, so relative `move` is the natural call; `mouse.position` reports where the pointer is.
 - `mouse.down/up/click(button)` and `keyboard.down/up/press(key)` act at the current pointer position. `key` is a Playwright key name (`KeyW`, `Space`, `ShiftLeft`, `Enter`). `click` and `press` hold for 60 ms, several frames, so per-frame input sampling sees the edge; use `down`/`up` with your own timing when the app needs a longer hold. Holds persist across other calls until the matching `up`; anything still held is released when the script ends.
 - Positions and deltas are whole CSS pixels, so angular precision under pointer lock is set by the app's pixels-to-angle mapping and the viewport size (`--viewport` changes the canvas the app maps against).
+- Delivery is not effect: an app that samples input per frame or rate-limits actions can drop an edge that arrives too early, and it may apply an action some frames after the event (a shot fired at an animation marker). Space actions by the app's own interval and confirm each one from state (a counter, ammo, health) before deciding the next.
 - Moves are queued in order; keys and buttons are independent of the move queue, so a movement key can stay held while the pointer aims.
 
 Do not assume an app's input mapping. Measure it: make one small move, observe the resulting change, and derive the ratio and sign before relying on it.
