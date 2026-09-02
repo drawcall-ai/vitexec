@@ -69,7 +69,7 @@ class Harness:
             shell=True, check=True,
         )
         Path("/tmp/warmup.ts").write_text(
-            'import { observe, sleep } from "vitexec/strict";\n'
+            'import { observe, sleep } from "vitexec";\n'
             'const t0 = performance.now();\n'
             'while (!(await observe(() => Boolean((window as any).LASTDROP)))) { if (performance.now() - t0 > 90000) throw new Error("warm-up boot failed"); await sleep(1000); }\n'
             'console.log("warm-up booted", Math.round(performance.now() - t0), "ms");\n'

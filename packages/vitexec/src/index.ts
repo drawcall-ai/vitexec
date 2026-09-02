@@ -8,6 +8,10 @@ import {
   type ResolvedConfig
 } from "vite";
 
+// The strict-script surface: types plus stubs that only throw outside `--strict`.
+export { keyboard, load, mouse, observe, sleep } from "./strict/api.js";
+export type { Loaded, MouseButton, Strict } from "./strict/api.js";
+
 const VITEXEC_CODE_ROUTE = "/__vitexec/code";
 const VITEXEC_MODULE_DIR = "/.vitexec/code";
 const MODULE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);

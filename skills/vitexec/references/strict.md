@@ -3,7 +3,7 @@
 `vitexec --strict script.ts` runs the script in the vitexec process, next to Playwright, instead of inside the page. The script can only observe the app and send real input, so it cannot cheat by writing state, calling app methods, or dispatching synthetic events. The app runs exactly as a user would see it, on its normal route.
 
 ```ts
-import { observe, load, mouse, keyboard, sleep } from "vitexec/strict";
+import { observe, load, mouse, keyboard, sleep } from "vitexec";
 
 const state = await load("/src/store.ts");
 while (!(await observe((m) => m.ready.value, state))) await sleep(50);
@@ -45,6 +45,6 @@ Do not assume an app's input mapping. Measure it: make one small move, observe t
 ## Shape and limits
 
 - Ordinary top-level-await script, `.ts` or `.js`; TypeScript types are stripped.
-- No page globals, no DOM, no imports other than `vitexec/strict`.
+- No page globals, no DOM, no imports other than that one from `vitexec`.
 - `console.log` prints as `[log]` lines alongside the page's own console output; a thrown error prints as `[error]` and ends the run with held input released.
 - `--path`, `--timeout`, `--screenshot`, `--record`, and the other run options work unchanged.

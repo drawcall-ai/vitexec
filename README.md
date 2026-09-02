@@ -143,7 +143,7 @@ vitexec --strict --gpu play.ts
 ```
 
 ```ts
-import { observe, mouse, keyboard, sleep } from "vitexec/strict";
+import { observe, mouse, keyboard, sleep } from "vitexec";
 
 while (!(await observe(() => window.game.ready))) await sleep(50);
 await keyboard.down("KeyW");

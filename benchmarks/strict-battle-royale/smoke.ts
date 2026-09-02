@@ -1,4 +1,4 @@
-import { observe, mouse, keyboard, sleep } from "vitexec/strict";
+import { observe, mouse, keyboard, sleep } from "vitexec";
 
 const t0 = performance.now();
 const since = () => Math.round(performance.now() - t0);

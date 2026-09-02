@@ -110,17 +110,17 @@ describe("strict mode", () => {
 
   it("reports script errors and rejects other imports", async () => {
     project = await createTempViteProject(APP);
-    const output = await runStrict('import { observe } from "vitexec/strict";\nthrow new Error("boom");');
+    const output = await runStrict('import { observe } from "vitexec";\nthrow new Error("boom");');
     expect(output).toContain("[error] Error: boom");
     await expect(compileStrictScript('import { x } from "/src/store.js";')).rejects.toThrow(
-      /may only import from "vitexec\/strict"/
+      /may only import from "vitexec"/
     );
   });
 
   it("strips TypeScript and the strict import", async () => {
     const script = await compileStrictScript(`
-      import type { Strict } from "vitexec/strict";
-      import { sleep } from "vitexec/strict";
+      import type { Strict } from "vitexec";
+      import { sleep } from "vitexec";
       const value: number = 1;
       await sleep(0);
       console.log(value satisfies number);

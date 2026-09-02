@@ -1,7 +1,8 @@
 // The public surface of a strict script. A strict script runs in the vitexec
 // process, not in the page: these are the only ways it can touch the app.
-// Runtime code here only fires when the module is imported outside `--strict`
-// (for example by Vite when the script is mistakenly run in ordinary mode).
+// A strict script imports these from "vitexec" for types; the import is
+// stripped before it runs, so the stubs only fire when such a script is run
+// without `--strict`.
 
 export type MouseButton = "left" | "middle" | "right";
 
@@ -47,7 +48,7 @@ export type Strict = {
 };
 
 function outsideStrictRun(): never {
-  throw new Error('"vitexec/strict" is only available to scripts run with `vitexec --strict`.');
+  throw new Error("observe, load, mouse, keyboard, and sleep exist only for scripts run with `vitexec --strict`.");
 }
 
 export const observe: Strict["observe"] = outsideStrictRun;

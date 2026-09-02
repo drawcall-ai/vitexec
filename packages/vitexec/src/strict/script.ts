@@ -5,8 +5,7 @@ import type { Strict } from "./api.js";
 import { createInput } from "./input.js";
 import { createObserver } from "./observe.js";
 
-const STRICT_MODULE = "vitexec/strict";
-const STRICT_IMPORT = /^[ \t]*import\s+(type\s+)?[^'"]*?from\s+["']vitexec\/strict["'];?[ \t]*$/gm;
+const STRICT_IMPORT = /^[ \t]*import\s+(type\s+)?[^'"]*?from\s+["']vitexec["'];?[ \t]*$/gm;
 const ANY_IMPORT = /^[ \t]*import\s/m;
 const EMPTY_EXPORT = /^[ \t]*export\s*\{\s*\};?[ \t]*$/gm;
 const AsyncFunction = (async () => undefined).constructor as new (
@@ -16,7 +15,7 @@ const AsyncFunction = (async () => undefined).constructor as new (
 /**
  * Turn a strict script into a function of the strict API. The script keeps
  * ordinary top-level-await shape; its only permitted import is the typed
- * `vitexec/strict` surface, which is supplied as parameters instead.
+ * strict surface from "vitexec", which is supplied as parameters instead.
  */
 export async function compileStrictScript(
   code: string
@@ -24,7 +23,7 @@ export async function compileStrictScript(
   const source = code.replace(STRICT_IMPORT, "");
   if (ANY_IMPORT.test(source)) {
     throw new Error(
-      `A strict script runs outside the page and may only import from "${STRICT_MODULE}"; ` +
+      'A strict script runs outside the page and may only import from "vitexec"; ' +
       "read app modules with load() and observe() instead."
     );
   }
