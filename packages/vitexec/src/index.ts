@@ -1,16 +1,38 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, posix, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   normalizePath,
   type IndexHtmlTransformContext,
   type Plugin,
   type ResolvedConfig
 } from "vite";
+export {
+  input,
+  type InputMouseButton,
+  type InputPhysicalCommand,
+  type InputResult
+} from "./input/browser.js";
+export {
+  observe,
+  type ObservationField,
+  type ObservationPathSegment,
+  type ObservationPrimitive,
+  type ObservationPrimitiveKind,
+  type ObservationProjection,
+  type ObservationProjectionResult,
+  type ObservationValue
+} from "./observe/browser.js";
 
 const VITEXEC_CODE_ROUTE = "/__vitexec/code";
 const VITEXEC_MODULE_DIR = "/.vitexec/code";
 const MODULE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
+
+function browserEntryPath(): string {
+  const extension = extname(fileURLToPath(import.meta.url));
+  return fileURLToPath(new URL(`./browser${extension}`, import.meta.url));
+}
 
 export type VitexecModuleExtension = ".js" | ".jsx" | ".mjs" | ".mts" | ".ts" | ".tsx";
 
@@ -308,6 +330,7 @@ export function vitexec(options: VitexecPluginOptions = {}): Plugin {
       });
     },
     async resolveId(id) {
+      if (id === "vitexec") return browserEntryPath();
       const current = activeState();
       if (!current) return;
 

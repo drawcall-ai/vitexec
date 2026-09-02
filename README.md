@@ -131,6 +131,46 @@ logs:
 
 No debug panel. No test-only app code. No guessing from pixels alone.
 
+## Strict mode
+
+Strict mode keeps execution in the live page but verifies the submitted source
+before it runs. The initial policy is a small, fail-closed syntactic subset:
+read-only observation through an app-installed provider, local control
+flow, passive logging, and direct Playwright-backed `input(...)` calls.
+
+```sh
+npx vitexec --strict-check vitexec/interact.ts
+npx vitexec --strict vitexec/interact.ts
+```
+
+```ts
+import { input, observe } from "vitexec";
+
+let state = observe({
+  ready: { kind: "boolean", path: ["dialog", "ready"] }
+});
+
+while (!state.ready) {
+  await input({ type: "wait", durationMs: 25 });
+  state = observe({
+    ready: { kind: "boolean", path: ["dialog", "ready"] }
+  });
+}
+
+await input({ type: "keyboard.press", key: "Enter", durationMs: 80 });
+console.log(observe({
+  open: { kind: "boolean", path: ["dialog", "open"] }
+}).open);
+```
+
+Applications expose trusted read-only state with
+`installObservationProvider` from `vitexec/observe/host`. Providers return a
+serialized JSON snapshot; strict source may project validated primitive paths.
+
+Strict mode is not a sandbox or a proof of arbitrary JavaScript semantics. Its
+trusted boundaries are the observation provider and the Playwright input host.
+Unsupported syntax and invalid commands fail visibly.
+
 ## Use It For
 
 - Camera controls, pointer lock, drag interactions, and gamepad input
@@ -159,6 +199,8 @@ same path under `./vitexec`, and otherwise treats it as inline code. Thus
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
 | `--screenshot ./page.png` | Capture a full-page screenshot |
 | `--record ./run.webm` | Record browser video |
+| `--strict` | Verify against the strict subset before execution |
+| `--strict-check` | Verify strict source without opening or executing the app |
 | `--cpu-profile ./cpu.cpuprofile` | Capture a Chrome/V8 CPU profile |
 | `--network-trace ./network.har` | Capture network requests as HAR |
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
@@ -180,6 +222,7 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_TIMEOUT` | `--timeout` |
 | `VITEXEC_SCREENSHOT` | `--screenshot` |
 | `VITEXEC_RECORD` | `--record` |
+| `VITEXEC_STRICT` | `--strict` |
 | `VITEXEC_CPU_PROFILE` | `--cpu-profile` |
 | `VITEXEC_NETWORK_TRACE` | `--network-trace` |
 | `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
