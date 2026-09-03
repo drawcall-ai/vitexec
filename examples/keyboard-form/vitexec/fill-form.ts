@@ -1,6 +1,6 @@
-type Read<T> = () => T | undefined | null;
+import { keyboard, mouse } from "vitexec";
 
-export {};
+type Read<T> = () => T | undefined | null;
 
 const waitFor = async <T>(read: Read<T>): Promise<T> => {
   for (let i = 0; i < 120; i += 1) {
@@ -12,12 +12,11 @@ const waitFor = async <T>(read: Read<T>): Promise<T> => {
 };
 
 const typeText = async (element: HTMLInputElement | HTMLTextAreaElement, text: string): Promise<void> => {
-  element.focus();
+  const box = element.getBoundingClientRect();
+  await mouse.moveTo(box.x + box.width / 2, box.y + box.height / 2);
+  await mouse.click();
   for (const character of text) {
-    element.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: character }));
-    element.value += character;
-    element.dispatchEvent(new InputEvent("input", { bubbles: true, data: character, inputType: "insertText" }));
-    element.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: character }));
+    await keyboard.press(character, { durationMs: 40 });
   }
 };
 
@@ -29,12 +28,9 @@ const api = await waitFor(() => window.keyboardForm);
 await typeText(title, "Launch checklist");
 await typeText(email, "pilot@example.com");
 await typeText(message, "Keyboard input drove this form.");
-window.dispatchEvent(new KeyboardEvent("keydown", {
-  bubbles: true,
-  code: "Enter",
-  ctrlKey: true,
-  key: "Enter"
-}));
+await keyboard.down("Control");
+await keyboard.press("Enter");
+await keyboard.up("Control");
 await new Promise((resolve) => requestAnimationFrame(resolve));
 
 console.log("keyboard-form", JSON.stringify(api.getSnapshot()));

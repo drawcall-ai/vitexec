@@ -1,6 +1,6 @@
 ---
 name: vitexec
-description: Use this skill when an AI agent needs to inspect, verify, debug, or profile a live Vite app by running temporary snippets inside the browser page and reading browser logs or captured artifacts. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, CPU/network/performance/heap analysis, WebXR/Three.js XR with IWER, and runtime-only behavior without editing app files.
+description: Use this skill when an AI agent needs to inspect, verify, debug, profile, or play through a live Vite app by running temporary scripts against the browser page and reading browser logs or captured artifacts. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, CPU/network/performance/heap analysis, WebXR/Three.js XR with IWER, and runtime-only behavior without editing app files.
 ---
 
 # vitexec
@@ -11,7 +11,7 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 
 ## References
 
-- For mouse, keyboard, pointer lock, gamepad, or other input, read [references/inputs.md](references/inputs.md).
+- For mouse, keyboard, or pointer lock, read [references/inputs.md](references/inputs.md).
 - For CPU, network, performance timeline, or heap analysis, read [references/performance.md](references/performance.md).
 - For WebXR, read [references/webxr.md](references/webxr.md).
 
@@ -36,8 +36,14 @@ For structured state, log JSON:
 
 ```sh
 vitexec --path /cart '
+  import { mouse } from "vitexec";
   import { useCartStore } from "/src/store/cart.ts";
-  document.querySelector("[data-testid=add-to-cart]")?.click();
+
+  const button = document.querySelector("[data-testid=add-to-cart]");
+  if (!(button instanceof HTMLElement)) throw new Error("Add button not found");
+  const box = button.getBoundingClientRect();
+  await mouse.moveTo(box.x + box.width / 2, box.y + box.height / 2);
+  await mouse.click();
   await new Promise((resolve) => requestAnimationFrame(resolve));
   console.log("cart", JSON.stringify(useCartStore.getState()));
 '
@@ -47,6 +53,8 @@ vitexec --path /cart '
 
 - Prefer importing exported app state over scraping DOM when state is available.
 - Use direct state reads for observation and assertions, not to bypass user interaction.
+- Use `mouse` and `keyboard` from `vitexec` for physical input; do not substitute synthetic DOM events.
+- `--timeout` covers boot, physical input, and script time; budget wall time, not only application time.
 - Use live progress logs and focused assertions to early-exit on failures and see current progress.
 - Keep logs concise; overly verbose logs become unreadable and unnecessarily fill the context.
 - Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.

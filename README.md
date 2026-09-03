@@ -113,11 +113,12 @@ running under the normal Vite dev server and production build.
 
 ```sh
 vitexec --gpu --path /scene '
+  import { keyboard } from "vitexec";
   import { app } from "/src/app.ts";
 
-  window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyW" }));
+  await keyboard.down("KeyW");
   await new Promise((resolve) => setTimeout(resolve, 1000));
-  window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyW" }));
+  await keyboard.up("KeyW");
 
   const { object, camera } = app.getSnapshot();
   console.log("moved", JSON.stringify({ object, camera }));
@@ -130,6 +131,34 @@ logs:
 ```
 
 No debug panel. No test-only app code. No guessing from pixels alone.
+
+## Human-like input
+
+Every script run by the Vitexec CLI can import `mouse` and `keyboard`. The
+facade runs in the page while its actions are delivered by Playwright, so the
+app receives trusted Chromium events instead of synthetic DOM events.
+
+```sh
+vitexec --gpu play.ts
+```
+
+```ts
+import { keyboard, mouse } from "vitexec";
+
+await mouse.moveTo(640, 360);
+await mouse.click();
+await keyboard.down("KeyW", { releaseAfterMs: 300 });
+await mouse.move(200, 0, { durationMs: 300 });
+```
+
+`mouse.move` and `moveTo` follow a smooth acceleration curve at 60 Hz with a
+1200 px/s speed ceiling. `moveLatest` starts immediately and lets a feedback loop
+replace unfinished aim. Non-zero subpixel relative moves become one physical
+pixel rather than disappearing. Holds can carry a `releaseAfterMs` deadline, and Vitexec
+releases anything still held when the script ends. Pointer lock receives real
+`movementX/Y`; acquire it from a trusted `mouse.click()` and verify
+`document.pointerLockElement`. The activation click still reaches the app, and
+compatible Playwright Chromium builds can grant pointer lock in headless mode.
 
 ## Use It For
 

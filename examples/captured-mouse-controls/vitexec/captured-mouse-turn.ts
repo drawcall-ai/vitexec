@@ -1,6 +1,6 @@
-type Read<T> = () => T | undefined | null;
+import { mouse } from "vitexec";
 
-export {};
+type Read<T> = () => T | undefined | null;
 
 const waitFor = async <T>(read: Read<T>): Promise<T> => {
   for (let i = 0; i < 120; i += 1) {
@@ -15,18 +15,11 @@ const canvas = await waitFor(() => document.querySelector<HTMLCanvasElement>("[d
 const api = await waitFor(() => window.capturedMouseControls);
 
 api.reset();
-canvas.dispatchEvent(new PointerEvent("pointerdown", {
-  bubbles: true,
-  button: 0,
-  buttons: 1,
-  pointerId: 1,
-  pointerType: "mouse"
-}));
-
-const move = new MouseEvent("mousemove", { bubbles: true });
-Object.defineProperty(move, "movementX", { value: 140 });
-Object.defineProperty(move, "movementY", { value: -32 });
-canvas.dispatchEvent(move);
+const rect = canvas.getBoundingClientRect();
+await mouse.moveTo(rect.x + rect.width / 2, rect.y + rect.height / 2);
+await mouse.down();
+await mouse.move(140, -32);
+await mouse.up();
 await new Promise((resolve) => requestAnimationFrame(resolve));
 
 console.log("captured-mouse-turn", JSON.stringify({

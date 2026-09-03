@@ -1,6 +1,7 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { extname, posix, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   normalizePath,
   type IndexHtmlTransformContext,
@@ -8,9 +9,15 @@ import {
   type ResolvedConfig
 } from "vite";
 
+export { keyboard, mouse } from "./input/api.js";
+export type { DurationOptions, HoldOptions, MouseButton } from "./input/api.js";
+
 const VITEXEC_CODE_ROUTE = "/__vitexec/code";
 const VITEXEC_MODULE_DIR = "/.vitexec/code";
 const MODULE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
+const BROWSER_ENTRY = fileURLToPath(
+  new URL(`./input/api${extname(fileURLToPath(import.meta.url))}`, import.meta.url)
+);
 
 export type VitexecModuleExtension = ".js" | ".jsx" | ".mjs" | ".mts" | ".ts" | ".tsx";
 
@@ -267,6 +274,7 @@ export function vitexec(options: VitexecPluginOptions = {}): Plugin {
 
   return {
     name: "vitexec",
+    enforce: "pre",
     configResolved(config) {
       state = states.get(config);
       if (!state) {
@@ -308,6 +316,7 @@ export function vitexec(options: VitexecPluginOptions = {}): Plugin {
       });
     },
     async resolveId(id) {
+      if (id === "vitexec") return BROWSER_ENTRY;
       const current = activeState();
       if (!current) return;
 

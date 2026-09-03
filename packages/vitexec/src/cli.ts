@@ -21,6 +21,7 @@ import {
 } from "playwright";
 import { createServer, loadConfigFromFile, type ViteDevServer } from "vite";
 import { vitexec, type VitexecModuleExtension } from "./index.js";
+import { installInput, type Input } from "./input/playwright.js";
 
 export type { VitexecModuleExtension };
 
@@ -224,11 +225,17 @@ async function runVitexecInServerTask(
   let target: BrowserTarget | undefined;
   let cdp: CDPSession | undefined;
   let completeInjectedCode: (() => void) | undefined;
+  let input: Input | undefined;
   let performanceTrace: PerformanceTraceCapture | undefined;
   // Force-close a browser we launched if we are aborted mid-navigation; adopted
   // handles belong to the caller and are never closed here.
   const closeOwnedBrowser = () => {
     if (target?.ownsBrowser) void target.browser?.close().catch(() => undefined);
+  };
+  const releaseInput = async () => {
+    const active = input;
+    input = undefined;
+    await active?.release();
   };
 
   const pendingConsoleLogs = new Set<Promise<void>>();
@@ -280,6 +287,7 @@ async function runVitexecInServerTask(
     page.on("requestfailed", onRequestFailed);
     page.on("response", onResponse);
     page.on("framenavigated", onFrameNavigated);
+    input = await installInput(page);
 
     const response = await navigateRunPage(page, url, timeoutMs);
     if (!response) log("[navigation] no response");
@@ -288,6 +296,7 @@ async function runVitexecInServerTask(
     }
 
     await injectedCodeFinished.promise;
+    await releaseInput();
     if (options.screenshotPath) {
       await saveScreenshot(page, options.screenshotPath);
       log(`[screenshot] ${options.screenshotPath}`);
@@ -299,6 +308,7 @@ async function runVitexecInServerTask(
   } finally {
     await Promise.allSettled(pendingConsoleLogs);
     try {
+      await releaseInput();
       if (cdp && options.cpuProfilePath && !signal.aborted) {
         await saveCpuProfile(cdp, options.cpuProfilePath);
         log(`[cpu-profile] ${options.cpuProfilePath}`);
