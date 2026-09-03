@@ -530,12 +530,18 @@ async function createRunContext(
   options: RunVitexecOptions
 ): Promise<BrowserContext> {
   if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
+  const effectiveViewport = viewport ?? { width: 1280, height: 720 };
   return browser.newContext({
     ignoreHTTPSErrors: true,
     hasTouch: options.touch,
-    ...(viewport ? { viewport } : {}),
+    viewport: effectiveViewport,
     ...(options.networkTracePath ? { recordHar: { path: options.networkTracePath } } : {}),
-    ...(options.recordPath ? { recordVideo: { dir: dirname(options.recordPath) } } : {})
+    ...(options.recordPath ? {
+      recordVideo: {
+        dir: dirname(options.recordPath),
+        size: effectiveViewport
+      }
+    } : {})
   });
 }
 

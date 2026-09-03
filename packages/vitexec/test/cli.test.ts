@@ -696,11 +696,15 @@ describe("vitexec CLI runner", () => {
 
     const output = await collectVitexec(
       "document.body.textContent = 'recorded'; await new Promise((resolve) => setTimeout(resolve, 50))",
-      { configFile: false, root: currentProject.root, recordPath }
+      { configFile: false, root: currentProject.root, recordPath, viewport: "1024x1024" }
     );
 
     expect(output).toContain(`[recording] ${recordPath}`);
     expect((await stat(recordPath)).size).toBeGreaterThan(0);
+    const video = await readFile(recordPath);
+    // WebM PixelWidth and PixelHeight elements, each containing the uint 1024.
+    expect(video.includes(Buffer.from([0xb0, 0x82, 0x04, 0x00]))).toBe(true);
+    expect(video.includes(Buffer.from([0xba, 0x82, 0x04, 0x00]))).toBe(true);
   });
 
   it("can capture a CPU profile for JavaScript hotspot analysis", async () => {

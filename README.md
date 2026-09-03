@@ -187,7 +187,7 @@ same path under `./vitexec`, and otherwise treats it as inline code. Thus
 | `--browser-ws-endpoint wss://...` | Connect to a Playwright browser WebSocket endpoint |
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
 | `--screenshot ./page.png` | Capture a full-page screenshot |
-| `--record ./run.webm` | Record browser video |
+| `--record ./run.webm` | Record browser video at the viewport size |
 | `--cpu-profile ./cpu.cpuprofile` | Capture a Chrome/V8 CPU profile |
 | `--network-trace ./network.har` | Capture network requests as HAR |
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
