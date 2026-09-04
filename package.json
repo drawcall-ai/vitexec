@@ -10,7 +10,7 @@
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
-    "@playwright/test": "^1.52.0",
+    "@playwright/test": "1.63.0-beta-1788477194000",
     "@types/node": "^22.15.3",
     "typescript": "^5.8.3",
     "vitest": "^3.1.2"

@@ -687,24 +687,74 @@ describe("vitexec CLI runner", () => {
     expect((await stat(screenshotPath)).size).toBeGreaterThan(0);
   });
 
-  it("can record a browser video after injected code runs", async () => {
+  it("can record a 60 FPS browser video with audio", async () => {
     currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
+      "index.html": `
+        <main>ready</main>
+        <script>
+          addEventListener("pointerdown", async () => {
+            const audio = new AudioContext();
+            const oscillator = audio.createOscillator();
+            oscillator.connect(audio.destination);
+            oscillator.start();
+            await audio.resume();
+          }, { once: true });
+        </script>
+      `
     });
     currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-record-"));
-    const recordPath = join(currentTempDir, "nested", "page.webm");
+    const recordPath = join(currentTempDir, "nested", "page.mp4");
 
     const output = await collectVitexec(
-      "document.body.textContent = 'recorded'; await new Promise((resolve) => setTimeout(resolve, 50))",
+      `
+        import { mouse } from "vitexec";
+        await mouse.moveTo(20, 20);
+        await mouse.click();
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      `,
       { configFile: false, root: currentProject.root, recordPath, viewport: "1024x1024" }
     );
 
     expect(output).toContain(`[recording] ${recordPath}`);
     expect((await stat(recordPath)).size).toBeGreaterThan(0);
     const video = await readFile(recordPath);
-    // WebM PixelWidth and PixelHeight elements, each containing the uint 1024.
-    expect(video.includes(Buffer.from([0xb0, 0x82, 0x04, 0x00]))).toBe(true);
-    expect(video.includes(Buffer.from([0xba, 0x82, 0x04, 0x00]))).toBe(true);
+    expect(video.subarray(4, 8).toString()).toBe("ftyp");
+    expect(video.includes(Buffer.from("Opus"))).toBe(true);
+    const av1SampleEntry = video.indexOf(Buffer.from("av01"), 32);
+    expect(av1SampleEntry).toBeGreaterThan(0);
+    expect(video.readUInt16BE(av1SampleEntry + 28)).toBe(1024);
+    expect(video.readUInt16BE(av1SampleEntry + 30)).toBe(1024);
+  });
+
+  it("can record video without audio", async () => {
+    currentProject = await createTempViteProject({
+      "index.html": "<main>ready</main>"
+    });
+    currentTempDir = await mkdtemp(join(tmpdir(), "vitexec-record-muted-"));
+    const recordPath = join(currentTempDir, "page.mp4");
+
+    await collectVitexec(
+      "await new Promise((resolve) => setTimeout(resolve, 100))",
+      {
+        configFile: false,
+        recordAudio: false,
+        recordFps: 30,
+        recordPath,
+        root: currentProject.root
+      }
+    );
+
+    const video = await readFile(recordPath);
+    expect(video.subarray(4, 8).toString()).toBe("ftyp");
+    expect(video.includes(Buffer.from("av01"))).toBe(true);
+    expect(video.includes(Buffer.from("Opus"))).toBe(false);
+  });
+
+  it("rejects a recording path that does not end in .mp4", async () => {
+    await expect(collectVitexec("console.log('unreached')", {
+      configFile: false,
+      recordPath: "recording.webm"
+    })).rejects.toThrow("Recording path must end in .mp4");
   });
 
   it("can capture a CPU profile for JavaScript hotspot analysis", async () => {
@@ -976,6 +1026,24 @@ describe("vitexec CLI runner", () => {
     expect(launchOptions.args).not.toContain("--enable-features=Vulkan");
   });
 
+  it("unmutes remote Chromium when recording", () => {
+    const headers = createRemoteBrowserHeaders({ recordPath: "recording.mp4" });
+    const launchOptions = JSON.parse(
+      headers?.["x-playwright-launch-options"] ?? "null"
+    );
+
+    expect(launchOptions).toEqual({ ignoreDefaultArgs: ["--mute-audio"] });
+  });
+
+  it("keeps remote Chromium muted for video-only recordings", () => {
+    const headers = createRemoteBrowserHeaders({
+      recordAudio: false,
+      recordPath: "recording.mp4"
+    });
+
+    expect(headers).toBeUndefined();
+  });
+
   it("can add custom browser launch args locally and remotely", () => {
     const browserArgs = [
       "--enable-features=Vulkan",
@@ -1011,7 +1079,9 @@ describe("vitexec CLI runner", () => {
         [VITEXEC_ENV.networkTrace]: "artifacts/network.har",
         [VITEXEC_ENV.path]: "/env-route",
         [VITEXEC_ENV.performanceTrace]: "artifacts/performance.trace.json",
-        [VITEXEC_ENV.record]: "artifacts/run.webm",
+        [VITEXEC_ENV.record]: "artifacts/run.mp4",
+        [VITEXEC_ENV.recordAudio]: "false",
+        [VITEXEC_ENV.recordFps]: "30",
         [VITEXEC_ENV.screenshot]: "artifacts/page.png",
         [VITEXEC_ENV.timeout]: "12"
       },
@@ -1028,7 +1098,9 @@ describe("vitexec CLI runner", () => {
       networkTracePath: "artifacts/network.har",
       path: "/env-route",
       performanceTracePath: "artifacts/performance.trace.json",
-      recordPath: "artifacts/run.webm",
+      recordAudio: false,
+      recordFps: 30,
+      recordPath: "artifacts/run.mp4",
       screenshotPath: "artifacts/page.png",
       timeoutMs: 12_000
     });
@@ -1071,6 +1143,15 @@ describe("vitexec CLI runner", () => {
     expect(() => createRunOptions({}, {
       env: { [VITEXEC_ENV.gpu]: "sometimes" }
     })).toThrow("VITEXEC_GPU must be one of");
+  });
+
+  it("validates recording frame rates", () => {
+    expect(() => createRunOptions({}, {
+      env: { [VITEXEC_ENV.recordFps]: "0" }
+    })).toThrow("recording frame rate must be a positive integer");
+    expect(() => createRunOptions({}, {
+      env: { [VITEXEC_ENV.recordFps]: "29.97" }
+    })).toThrow("recording frame rate must be a positive integer");
   });
 
   it("validates browser args environment variables", () => {

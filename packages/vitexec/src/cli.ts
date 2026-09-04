@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { createWriteStream, realpathSync } from "node:fs";
 import { access, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
 import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
 import spawn from "nano-spawn";
@@ -39,6 +40,8 @@ export const VITEXEC_ENV = {
   path: "VITEXEC_PATH",
   performanceTrace: "VITEXEC_PERFORMANCE_TRACE",
   record: "VITEXEC_RECORD",
+  recordAudio: "VITEXEC_RECORD_AUDIO",
+  recordFps: "VITEXEC_RECORD_FPS",
   screenshot: "VITEXEC_SCREENSHOT",
   touch: "VITEXEC_TOUCH",
   timeout: "VITEXEC_TIMEOUT",
@@ -65,6 +68,10 @@ export type RunVitexecOptions = {
   networkTracePath?: string;
   path?: string;
   performanceTracePath?: string;
+  /** Include page audio in recordings. Defaults to true. */
+  recordAudio?: boolean;
+  /** Recording frame rate. Defaults to 60. */
+  recordFps?: number;
   recordPath?: string;
   root?: string;
   screenshotPath?: string;
@@ -106,6 +113,8 @@ type CliOptions = {
   path?: string;
   performanceTrace?: string;
   record?: string;
+  recordAudio?: boolean;
+  recordFps?: number;
   screenshot?: string;
   touch?: boolean;
   viewport?: string;
@@ -116,6 +125,11 @@ export async function* runVitexec(
   code: string,
   options: RunVitexecOptions = {}
 ): AsyncGenerator<string> {
+  if (options.recordPath && extname(options.recordPath).toLowerCase() !== ".mp4") {
+    throw new Error(`Recording path must end in .mp4: ${options.recordPath}`);
+  }
+  if (options.recordFps !== undefined) validateRecordFps(options.recordFps);
+
   const id = randomUUID();
   const server = await startViteServer(id, code, options);
 
@@ -227,6 +241,7 @@ async function runVitexecInServerTask(
   let completeInjectedCode: (() => void) | undefined;
   let input: Input | undefined;
   let performanceTrace: PerformanceTraceCapture | undefined;
+  let recording: Recording | undefined;
   // Force-close a browser we launched if we are aborted mid-navigation; adopted
   // handles belong to the caller and are never closed here.
   const closeOwnedBrowser = () => {
@@ -268,11 +283,12 @@ async function runVitexecInServerTask(
     const injectedCodeFinished = createInjectedCodeCompletion(timeoutMs, signal);
     completeInjectedCode = injectedCodeFinished.resolve;
 
-    if (!target.ownsContext && (options.networkTracePath || options.recordPath)) {
-      log("[skipped] --record / --network-trace need a vitexec-created context; ignored for an adopted page/context");
+    if (!target.ownsContext && options.networkTracePath) {
+      log("[skipped] --network-trace needs a vitexec-created context; ignored for an adopted page/context");
     }
 
     cdp = await context.newCDPSession(page);
+    if (options.recordPath) recording = await startRecording(cdp, page, options);
     if (options.cpuProfilePath) {
       await cdp.send("Profiler.enable");
       await cdp.send("Profiler.start");
@@ -321,8 +337,8 @@ async function runVitexecInServerTask(
         await saveHeapSnapshotSummary(cdp, options.heapSnapshotPath);
         log(`[heap-snapshot] ${options.heapSnapshotPath}`);
       }
-      if (target?.ownsContext && options.recordPath && !signal.aborted) {
-        await saveRecording(target.page, options.recordPath);
+      if (cdp && recording && options.recordPath && !signal.aborted) {
+        await saveRecording(cdp, recording, options.recordPath);
         log(`[recording] ${options.recordPath}`);
       }
     } finally {
@@ -464,7 +480,8 @@ async function launchBrowser(
 
   return chromium.launch({
     channel: "chromium",
-    args: createBrowserArgs(options)
+    args: createBrowserArgs(options),
+    ...(recordsAudio(options) ? { ignoreDefaultArgs: ["--mute-audio"] } : {})
   });
 }
 
@@ -535,13 +552,7 @@ async function createRunContext(
     ignoreHTTPSErrors: true,
     hasTouch: options.touch,
     viewport: effectiveViewport,
-    ...(options.networkTracePath ? { recordHar: { path: options.networkTracePath } } : {}),
-    ...(options.recordPath ? {
-      recordVideo: {
-        dir: dirname(options.recordPath),
-        size: effectiveViewport
-      }
-    } : {})
+    ...(options.networkTracePath ? { recordHar: { path: options.networkTracePath } } : {})
   });
 }
 
@@ -555,16 +566,21 @@ function parseViewport(value: string | undefined): ViewportSize | null {
 }
 
 export function createRemoteBrowserHeaders(
-  options: Pick<RunVitexecOptions, "browserArgs" | "gpu">
+  options: Pick<RunVitexecOptions, "browserArgs" | "gpu" | "recordAudio" | "recordPath">
 ): Record<string, string> | undefined {
   const args = createBrowserArgs(options);
-  if (!args) return undefined;
+  if (!args && !recordsAudio(options)) return undefined;
 
   return {
     "x-playwright-launch-options": JSON.stringify({
-      args
+      ...(args ? { args } : {}),
+      ...(recordsAudio(options) ? { ignoreDefaultArgs: ["--mute-audio"] } : {})
     })
   };
+}
+
+function recordsAudio(options: Pick<RunVitexecOptions, "recordAudio" | "recordPath">): boolean {
+  return Boolean(options.recordPath) && options.recordAudio !== false;
 }
 
 export function createBrowserArgs(
@@ -975,17 +991,45 @@ function createInjectedCodeCompletion(timeoutMs: number, signal: AbortSignal): {
   };
 }
 
-async function saveRecording(
-  page: Page,
-  path: string
-): Promise<void> {
-  const video = page.video();
-  if (!video) throw new Error("Recording was requested, but Playwright did not create a video.");
+type Recording = { stream: string };
 
+async function startRecording(
+  cdp: CDPSession,
+  page: Page,
+  options: Pick<RunVitexecOptions, "recordAudio" | "recordFps">
+): Promise<Recording> {
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("Recording requires a Playwright viewport.");
+
+  return cdp.send("Page.startScreenRecording", {
+    audio: options.recordAudio ?? true,
+    frameRate: options.recordFps ?? 60,
+    maxWidth: viewport.width,
+    maxHeight: viewport.height
+  });
+}
+
+async function saveRecording(cdp: CDPSession, recording: Recording, path: string): Promise<void> {
+  const stopped = await cdp.send("Page.stopScreenRecording");
+  if (stopped.stream !== recording.stream) {
+    throw new Error("Chromium returned a different recording stream when stopping.");
+  }
   await ensureParentDir(path);
-  await page.close();
-  await video.saveAs(path);
-  await video.delete().catch(() => undefined);
+  await pipeline(readCdpStream(cdp, stopped.stream), createWriteStream(path));
+}
+
+async function* readCdpStream(cdp: CDPSession, stream: string): AsyncGenerator<Buffer> {
+  try {
+    for (;;) {
+      const chunk = await cdp.send("IO.read", { handle: stream, size: 1024 * 1024 });
+      if (chunk.data) {
+        yield Buffer.from(chunk.data, chunk.base64Encoded ? "base64" : "utf8");
+      }
+      if (chunk.eof) return;
+    }
+  } finally {
+    await cdp.send("IO.close", { handle: stream });
+  }
 }
 
 async function collectConsole(
@@ -1078,7 +1122,10 @@ async function main(): Promise<void> {
     .option("--network-trace <path>", "write a HAR network trace after the code runs")
     .option("--path <path>", "Vite page path to open")
     .option("--performance-trace <path>", "write a Chrome performance trace after the code runs")
-    .option("--record <path>", "write a WebM video recording after the code runs")
+    .option("--record <path>", "write an MP4 recording (60 FPS with page audio by default)")
+    .option("--record-audio", "include page audio in the recording (default)")
+    .option("--record-fps <fps>", "recording frame rate", parseRecordFps)
+    .option("--no-record-audio", "omit page audio from the recording")
     .option(
       "--browser-ws-endpoint <ws-endpoint>",
       "Playwright browser WebSocket endpoint to connect to instead of launching Chromium locally"
@@ -1137,6 +1184,8 @@ export function createRunOptions(
     networkTracePath: options.networkTrace ?? envString(env, VITEXEC_ENV.networkTrace),
     path: options.path ?? envString(env, VITEXEC_ENV.path),
     performanceTracePath: options.performanceTrace ?? envString(env, VITEXEC_ENV.performanceTrace),
+    recordAudio: options.recordAudio ?? envBoolean(env, VITEXEC_ENV.recordAudio),
+    recordFps: options.recordFps ?? envNumber(env, VITEXEC_ENV.recordFps, parseRecordFps),
     recordPath: options.record ?? envString(env, VITEXEC_ENV.record),
     screenshotPath: options.screenshot ?? envString(env, VITEXEC_ENV.screenshot),
     touch: options.touch ?? envBoolean(env, VITEXEC_ENV.touch),
@@ -1177,6 +1226,18 @@ function parseTimeoutSeconds(value: string): number {
   }
 
   return seconds;
+}
+
+function parseRecordFps(value: string): number {
+  const fps = Number(value);
+  validateRecordFps(fps);
+  return fps;
+}
+
+function validateRecordFps(fps: number): void {
+  if (!Number.isInteger(fps) || fps <= 0) {
+    throw new InvalidArgumentError("recording frame rate must be a positive integer");
+  }
 }
 
 function envString(env: Environment, name: string): string | undefined {

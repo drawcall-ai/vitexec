@@ -187,7 +187,9 @@ same path under `./vitexec`, and otherwise treats it as inline code. Thus
 | `--browser-ws-endpoint wss://...` | Connect to a Playwright browser WebSocket endpoint |
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
 | `--screenshot ./page.png` | Capture a full-page screenshot |
-| `--record ./run.webm` | Record browser video at the viewport size |
+| `--record ./run.mp4` | Record an MP4 at the viewport size (60 FPS with page audio by default) |
+| `--record-fps 30` | Set the recording frame rate |
+| `--record-audio` / `--no-record-audio` | Include (default) or omit page audio |
 | `--cpu-profile ./cpu.cpuprofile` | Capture a Chrome/V8 CPU profile |
 | `--network-trace ./network.har` | Capture network requests as HAR |
 | `--performance-trace ./performance.trace.json` | Capture a Chrome performance trace |
@@ -209,6 +211,8 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_TIMEOUT` | `--timeout` |
 | `VITEXEC_SCREENSHOT` | `--screenshot` |
 | `VITEXEC_RECORD` | `--record` |
+| `VITEXEC_RECORD_FPS` | `--record-fps` |
+| `VITEXEC_RECORD_AUDIO` | `--record-audio` / `--no-record-audio` |
 | `VITEXEC_CPU_PROFILE` | `--cpu-profile` |
 | `VITEXEC_NETWORK_TRACE` | `--network-trace` |
 | `VITEXEC_PERFORMANCE_TRACE` | `--performance-trace` |
@@ -241,9 +245,10 @@ runVitexec(code, { root, browser }); // open a fresh context + page in this brow
 vitexec only ever closes handles it created itself: an adopted `page` is left
 open, an adopted `context` keeps its own pages (vitexec closes just the page it
 opened), and an adopted `browser` keeps running (vitexec closes just the context
-it opened). Its own Vite server is always closed. `--record` and
-`--network-trace` need a vitexec-created context, so they are skipped for an
-adopted page or context.
+it opened). Its own Vite server is always closed. Recording works with an
+adopted page that has a Playwright viewport when Chromium was launched without
+`--mute-audio`. `--network-trace` needs a vitexec-created context, so it is
+skipped for an adopted page or context.
 
 This is also how you reuse one browser across many runs: connect or launch it
 once yourself and pass it in — vitexec never closes what it did not create. (The

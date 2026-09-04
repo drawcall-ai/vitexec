@@ -11,7 +11,7 @@ Use vitexec artifacts for live-browser slowness, jank, leaks, or network behavio
 | Jank, long tasks, rendering cost | `--performance-trace ./artifacts/performance.trace.json` |
 | Retained objects/leak | `--heap-snapshot ./artifacts/heap.json` |
 | Visual end state | `--screenshot ./artifacts/page.png` |
-| Temporal visual issue | `--record ./artifacts/run.webm` |
+| Temporal visual issue | `--record ./artifacts/run.mp4` |
 
 Capture both `--cpu-profile` and `--performance-trace` when unsure whether the issue is JS or browser rendering. Heap output is vitexec-specific: it is decoded into jq-friendly `nodes`, `edges`, and `summary`.
 

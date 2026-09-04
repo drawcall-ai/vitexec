@@ -3,6 +3,9 @@
   "version": "0.1.17",
   "type": "module",
   "description": "Build and run browser scripts inside Vite apps.",
+  "engines": {
+    "node": ">=20"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -39,7 +42,7 @@
   "dependencies": {
     "commander": "^14.0.3",
     "nano-spawn": "^2.1.0",
-    "playwright": "^1.52.0"
+    "playwright": "1.63.0-beta-1788477194000"
   },
   "devDependencies": {
     "vite": "^8.0.10",
