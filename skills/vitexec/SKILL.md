@@ -20,7 +20,7 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 1. Identify the page path if it is not `/`.
 2. Write the smallest snippet that performs the user-like action or reads the browser-only state.
 3. Run `vitexec '<snippet>'` or `vitexec check.ts` for `./vitexec/check.ts`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--cpu-profile`, `--network-trace`, `--performance-trace`, `--heap-snapshot`, `--timeout`, or `--config` only when needed.
-4. Treat stdout as browser logs. It starts with `logs:`.
+4. Inspect the logs and exit status. A script failure or timeout exits nonzero; printed errors are not successful completion.
 
 If `vitexec` itself is missing, install `vitexec` with the package manager already used by the project.
 
@@ -49,12 +49,44 @@ vitexec --path /cart '
 '
 ```
 
+## Reusing a page
+
+Use a session when later scripts need the state created by earlier actions:
+
+```sh
+vitexec open game
+vitexec run game setup.ts
+vitexec run game play.ts
+vitexec close game
+```
+
+Start `open` with the agent's background-terminal tool; it remains in the foreground
+and streams ordinary page diagnostics. Wait for `[ready] game <url>` before `run`.
+Use the same working directory for all commands. Browser/Vite/viewport options go
+on `open`; per-run screenshots, recordings, and profiles go on `run`.
+
+Each `run` waits for execution and streams console logs traceable to its script.
+App logs without an identifiable script stack stay in `open`, including some logs
+triggered by physical input. Check that output when investigating app failures.
+Scripts should await the work whose logs they need. After a timeout, close and reopen
+the session: the old code may still be running.
+
+Separate `run` calls may overlap for observation alongside input. They share the same
+page; use one input driver at a time. Recording/profiling operations cannot overlap.
+Close the session when done; `close` waits for cleanup and ends the owner process.
+No separate daemon, job scheduler, or `--parallel` flag is needed.
+
+For programmatic composition, use `const page = await openPage(options)`,
+`await run(page, code, { onLog })`, and `await page.close()` in `finally`.
+`openPage` owns its server and browser; its `onLog` receives page diagnostics.
+`run` only injects into an existing Chromium page and never navigates or closes it.
+
 ## Guidance
 
 - Prefer importing exported app state over scraping DOM when state is available.
 - Use direct state reads for observation and assertions, not to bypass user interaction.
 - Use `mouse` and `keyboard` from `vitexec` for physical input; do not substitute synthetic DOM events.
-- `--timeout` covers boot, physical input, and script time; budget wall time, not only application time.
+- `--timeout` budgets navigation on `open` and execution on `run`; budget physical-input wall time, not only application time.
 - Use live progress logs and focused assertions to early-exit on failures and see current progress.
 - Keep logs concise; overly verbose logs become unreadable and unnecessarily fill the context.
 - Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.

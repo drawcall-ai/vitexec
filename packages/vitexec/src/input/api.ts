@@ -18,13 +18,13 @@ export type InputCommand =
 export const INPUT_BINDING = "__vitexecInput";
 
 declare global {
-  var __vitexecInput: ((command: InputCommand) => Promise<void>) | undefined;
+  var __vitexecInput: ((command: InputCommand, stack?: string) => Promise<void>) | undefined;
 }
 
 function send(command: InputCommand): Promise<void> {
   const input = globalThis.__vitexecInput;
   if (!input) throw new Error("Vitexec input is unavailable outside a running Vitexec script.");
-  return input(command);
+  return input(command, new Error().stack);
 }
 
 export const mouse = {

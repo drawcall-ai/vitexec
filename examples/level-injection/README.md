@@ -21,9 +21,9 @@ pnpm --filter vitexec build
 pnpm --filter level-injection play
 ```
 
-`play.mjs` creates a server and browser, opens the game once, then awaits three
+`play.mjs` uses `openPage()` to open the game once, then awaits three
 `run(page, code, { onLog: console.log })` calls. Each script plays one level and
-checks its result. The browser and server close in `finally`.
+checks its result. `page.close()` closes the page, browser, and server in `finally`.
 
-`createServer()` enables injection automatically. The `vitexec()` plugin in
+`openPage()` enables injection automatically. The `vitexec()` plugin in
 `vite.config.ts` also enables it when starting Vite manually.
