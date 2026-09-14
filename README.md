@@ -229,27 +229,26 @@ host-specific GPU policy that matches its platform.
 vitexec open game                      # foreground owner; streams page logs
 vitexec run game scripts/setup.ts      # another terminal or agent tool call
 vitexec run game scripts/play.ts       # same document and app state
-vitexec close game                     # waits for cleanup; open exits
 ```
 
-An agent can start `open` using its background-terminal tool. Wait for
-`[ready] game <url>` before injecting. This means navigation finished and the
-injection server is available; scripts still need to await app-specific readiness.
+Start `open` using the agent’s background-terminal tool. `run` waits for page
+startup automatically; scripts still need to await app-specific readiness.
 Sessions are named within the current working directory. Use that same directory
-for `open`, `run`, and `close`. Duplicate live names fail instead of replacing pages.
+for `open` and `run`. Duplicate live names fail instead of replacing pages.
 
 Separate `run` commands can overlap. Each command waits for its script and prints
-its attributed logs. There is no job queue or detached mode. `close` interrupts
-active runs, closes owned resources, and is harmless when the session is absent.
-SIGINT and SIGTERM also close the session gracefully.
+its attributed logs. Stop the foreground `open` process with SIGINT or SIGTERM
+to interrupt active runs and close its page, browser, and server.
 
 Browser, Vite, path, viewport, touch, and network-trace options belong to `open`.
 Screenshot, recording, and profiling options belong to `run`. `--timeout` sets the
-navigation budget on `open` and the execution budget on `run`. Artifact paths are
+navigation budget on `open`. On `run`, it includes connecting, waiting for page
+startup, and execution. Connection attempts retry for up to one second (bounded
+by `--timeout`); submitted scripts are never retried. Artifact paths are
 resolved from the invoking command's working directory.
 
 The existing `vitexec <file-or-code>` command still performs one execution with
-automatic cleanup. Use `./open`, `./run`, or `./close` for files whose names match
+automatic cleanup. Use `./open` or `./run` for files whose names match
 subcommands. A leading `--` disambiguates literal code from subcommands.
 
 ## Programmatic execution

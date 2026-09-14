@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,13 +20,13 @@ function launch(args: string[]) {
   return {
     child, done,
     output: () => output,
-    async ready() {
+    async waitFor(text: string) {
       await Promise.race([
         new Promise<void>(resolve => {
-          const check = () => { if (output.includes("[ready]")) { listeners.delete(check); resolve(); } };
+          const check = () => { if (output.includes(text)) { listeners.delete(check); resolve(); } };
           listeners.add(check); check();
         }),
-        done.then(result => { throw new Error(`Owner exited before ready: ${result.output}`); })
+        done.then(result => { throw new Error(`Process exited before expected output: ${result.output}`); })
       ]);
     }
   };
@@ -39,15 +40,16 @@ afterEach(async () => {
 async function open() {
   project = await createTempViteProject({ "index.html": '<script>console.log("app boot")</script><main>0</main>' });
   owner = launch(["open", "game"]);
-  await owner.ready();
+
   return owner;
 }
 
 describe("session CLI", () => {
   it("opens without a script, preserves state and routes output to each command", async () => {
     const owner = await open();
-    expect(owner.output()).toContain("app boot");
     expect((await launch(["run", "game", 'document.querySelector("main").textContent = "kept";']).done).code).toBe(0);
+    expect(owner.output()).toContain("app boot");
+    expect(owner.output()).not.toContain("[ready]");
     const [a, b] = await Promise.all([
       launch(["run", "game", 'console.log("first", document.querySelector("main").textContent); await new Promise(r => setTimeout(r, 50)); console.log("first done");']).done,
       launch(["run", "game", 'console.log("second");']).done
@@ -58,14 +60,13 @@ describe("session CLI", () => {
     expect(a.output).not.toContain("second");
     expect(b.output).not.toContain("first");
     expect(owner.output()).not.toContain("first kept");
-    const closed = await launch(["close", "game"]).done;
-    expect(closed, `${closed.output}\nOwner: ${owner?.output()}`).toMatchObject({ code: 0 });
+    owner.child.kill("SIGTERM");
     expect((await owner.done).code).toBe(0);
-    expect((await launch(["close", "game"]).done).code).toBe(0);
   });
 
   it("rejects duplicate sessions and exits nonzero on script errors", async () => {
     await open();
+    expect((await launch(["run", "game", ""]).done).code).toBe(0);
     expect((await launch(["open", "game"]).done).code).toBe(1);
     const failure = await launch(["run", "game", 'throw new Error("script failed")']).done;
     expect(failure.code).toBe(1);
@@ -73,21 +74,76 @@ describe("session CLI", () => {
     expect((await launch(["run", "game", 'console.log("recovered")']).done).code).toBe(0);
   });
 
-  it("interrupts active runs on close", async () => {
-    await open();
-    const active = launch(["run", "game", 'await new Promise(() => {});']);
-    // Closing is allowed whether this client was accepted yet or is still connecting.
-    const closed = await launch(["close", "game"]).done;
-    expect(closed, `${closed.output}\nOwner: ${owner?.output()}`).toMatchObject({ code: 0 });
+  it.each(["SIGINT", "SIGTERM"] as const)("interrupts active runs on %s", async signal => {
+    const owner = await open();
+    const active = launch(["run", "game", 'console.log("running"); await new Promise(() => {});']);
+    await active.waitFor("[log] running");
+    owner.child.kill(signal);
+    expect((await owner.done).code).toBe(0);
     expect((await active.done).code).toBe(1);
   });
 
   it("cleans up on SIGTERM and allows the same session name again", async () => {
     const first = await open();
+    expect((await launch(["run", "game", ""]).done).code).toBe(0);
     first.child.kill("SIGTERM");
     expect((await first.done).code).toBe(0);
     owner = launch(["open", "game"]);
-    await owner.ready();
+    expect((await launch(["run", "game", ""]).done).code).toBe(0);
+  });
+
+  it("waits for a session launched just after its client", async () => {
+    project = await createTempViteProject({ "index.html": "<main>loaded</main>" });
+    const client = launch(["run", "game", 'console.log(document.querySelector("main").textContent)']);
+    await delay(200);
+    owner = launch(["open", "game"]);
+    const result = await client.done;
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain("[log] loaded");
+  });
+
+  it("reports startup failures to waiting clients", async () => {
+    project = await createTempViteProject({
+      "index.html": "<main/>",
+      "vite.config.mjs": 'export default async () => { await new Promise(r => setTimeout(r, 800)); throw new Error("startup failed"); };'
+    });
+    owner = launch(["open", "game"]);
+    const client = await launch(["run", "game", 'console.log("should not run")']).done;
+    expect(client.code).toBe(1);
+    expect((await owner.done).code).toBe(1);
+    expect(client.output).toContain("startup failed");
+  });
+
+  it("does not inject timed-out work after startup completes", async () => {
+    project = await createTempViteProject({
+      "index.html": "<main>untouched</main>",
+      "vite.config.mjs": 'export default async () => { await new Promise(r => setTimeout(r, 800)); return {}; };'
+    });
+    owner = launch(["open", "game"]);
+    const expired = await launch(["run", "game", 'document.querySelector("main").textContent = "changed"', "--timeout", "0.2"]).done;
+    expect(expired.code).toBe(1);
+    expect(expired.output).toContain("timed out");
+    const next = await launch(["run", "game", 'console.log(document.querySelector("main").textContent)']).done;
+    expect(next.code, next.output).toBe(0);
+    expect(next.output).toContain("[log] untouched");
+  });
+
+  it("interrupts navigation on SIGTERM", async () => {
+    project = await createTempViteProject({
+      "index.html": '<script>console.log("navigating")</script><script src="/hang.js"></script>',
+      "vite.config.mjs": 'export default { plugins: [{ name: "hang", configureServer(server) { server.middlewares.use((req, res, next) => { if (req.url !== "/hang.js") next(); }); } }] };'
+    });
+    owner = launch(["open", "game"]);
+    await owner.waitFor("[log] navigating");
+    const client = launch(["run", "game", 'console.log("never")']);
+    owner.child.kill("SIGTERM");
+    expect((await owner.done).code).toBe(0);
+    expect((await client.done).code).toBe(1);
+  });
+
+  it("bounds the wait for an absent session", async () => {
+    project = await createTempViteProject({ "index.html": "<main/>" });
+    expect((await launch(["run", "missing", ""]).done).code).toBe(1);
   });
 
   it("keeps one-shot execution and reports its failures", async () => {

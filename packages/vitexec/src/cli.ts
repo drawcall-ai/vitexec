@@ -37,7 +37,7 @@ async function execute(parts: string[], options: CliOptions, session?: string) {
     for (const key of ["cpuProfilePath", "heapSnapshotPath", "performanceTracePath", "recordPath", "screenshotPath"] as const) {
       if (settings[key]) settings[key] = resolve(settings[key]);
     }
-    await callSession(session, { command: "run", code: input.code, options: settings }, print);
+    await callSession(session, { code: input.code, options: settings }, print);
     return;
   }
   const page = await openPage({ ...settings, gpu: settings.gpu ?? false, onLog: print });
@@ -59,9 +59,6 @@ async function main() {
   addOptions(program.command("run <session> <code-or-file...>"), "run")
     .description("Inject into a session's existing page and stream this script's logs")
     .action((session: string, parts: string[], options: CliOptions) => execute(parts, options, session));
-  program.command("close <session>")
-    .description("Interrupt runs and await session cleanup")
-    .action((session: string) => callSession(session, { command: "close" }, print));
   await program.parseAsync();
 }
 

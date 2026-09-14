@@ -57,24 +57,23 @@ Use a session when later scripts need the state created by earlier actions:
 vitexec open game
 vitexec run game setup.ts
 vitexec run game play.ts
-vitexec close game
 ```
 
 Start `open` with the agent's background-terminal tool; it remains in the foreground
-and streams ordinary page diagnostics. Wait for `[ready] game <url>` before `run`.
+and streams ordinary page diagnostics. `run` waits for page startup automatically.
 Use the same working directory for all commands. Browser/Vite/viewport options go
 on `open`; per-run screenshots, recordings, and profiles go on `run`.
 
 Each `run` waits for execution and streams console logs traceable to its script.
 App logs without an identifiable script stack stay in `open`, including some logs
 triggered by physical input. Check that output when investigating app failures.
-Scripts should await the work whose logs they need. After a timeout, close and reopen
+Scripts should await the work whose logs they need. After an execution timeout, stop and restart
 the session: the old code may still be running.
 
 Separate `run` calls may overlap for observation alongside input. They share the same
 page; use one input driver at a time. Recording/profiling operations cannot overlap.
-Close the session when done; `close` waits for cleanup and ends the owner process.
-No separate daemon, job scheduler, or `--parallel` flag is needed.
+When done, stop the `open` process with SIGINT or SIGTERM and await its exit;
+it closes the page, browser, and server.
 
 For programmatic composition, use `const page = await openPage(options)`,
 `await run(page, code, { onLog })`, and `await page.close()` in `finally`.
@@ -86,7 +85,7 @@ For programmatic composition, use `const page = await openPage(options)`,
 - Prefer importing exported app state over scraping DOM when state is available.
 - Use direct state reads for observation and assertions, not to bypass user interaction.
 - Use `mouse` and `keyboard` from `vitexec` for physical input; do not substitute synthetic DOM events.
-- `--timeout` budgets navigation on `open` and execution on `run`; budget physical-input wall time, not only application time.
+- `--timeout` budgets navigation on `open` and connection, startup, and execution on `run`; budget physical-input wall time, not only application time.
 - Use live progress logs and focused assertions to early-exit on failures and see current progress.
 - Keep logs concise; overly verbose logs become unreadable and unnecessarily fill the context.
 - Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.

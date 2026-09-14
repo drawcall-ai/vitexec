@@ -5,11 +5,12 @@ import { validateRunOptions, parseViewport, VITEXEC_TIMEOUT_MS, type AppRunOptio
 import { ensureParentDir } from "./files.js";
 import { preparePage } from "./run.js";
 
-export type OpenPageOptions = Pick<AppRunOptions, "root" | "configFile" | "path" | "viewport" | "touch" | "networkTracePath" | "timeoutMs" | "onLog"> & Omit<OpenBrowserOptions, "log" | "handleSignals">;
+export type OpenPageOptions = Pick<AppRunOptions, "root" | "configFile" | "path" | "viewport" | "touch" | "networkTracePath" | "timeoutMs" | "onLog"> & Omit<OpenBrowserOptions, "log" | "handleSignals"> & { signal?: AbortSignal };
 
 /** Open an owned app. Awaiting page.close() also closes its browser and Vite server. */
 export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
   validateRunOptions(options);
+  options.signal?.throwIfAborted();
   const server = await openServer(options);
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
@@ -22,7 +23,9 @@ export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
     if (errors.length) throw new AggregateError(errors, "Failed to close the app.");
   })();
   try {
+    options.signal?.throwIfAborted();
     browser = await openBrowser({ ...options, handleSignals: false, log: options.onLog });
+    options.signal?.throwIfAborted();
     if (options.networkTracePath) await ensureParentDir(options.networkTracePath);
     context = await browser.newContext({
       ignoreHTTPSErrors: true,
@@ -35,14 +38,26 @@ export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
     const { collector } = await preparePage(page);
     collector.setPageLog(options.onLog ?? (() => {}));
     page.close = close;
-    const url = new URL(options.path?.replace(/^\//, "") ?? "", server.url).href;
-    const response = await page.goto(url, { waitUntil: "load", timeout: options.timeoutMs ?? VITEXEC_TIMEOUT_MS });
-    if (response && !response.ok()) throw new Error(`Page returned HTTP ${response.status()}: ${url}`);
-    if (!await page.evaluate(() => document.querySelector('meta[name="vitexec"]')?.getAttribute("content"))) {
-      throw new Error(`Page does not support Vitexec injection: ${url}`);
-    }
-    await collector.drain();
-    return page;
+    options.signal?.throwIfAborted();
+    let abort: () => void = () => {};
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => reject(options.signal?.reason);
+      options.signal?.addEventListener("abort", abort, { once: true });
+    });
+    try {
+      const navigation = (async () => {
+        const url = new URL(options.path?.replace(/^\//, "") ?? "", server.url).href;
+        const response = await page.goto(url, { waitUntil: "load", timeout: options.timeoutMs ?? VITEXEC_TIMEOUT_MS });
+        if (response && !response.ok()) throw new Error(`Page returned HTTP ${response.status()}: ${url}`);
+        if (!await page.evaluate(() => document.querySelector('meta[name="vitexec"]')?.getAttribute("content"))) {
+          throw new Error(`Page does not support Vitexec injection: ${url}`);
+        }
+        await collector.drain();
+        options.signal?.throwIfAborted();
+        return page;
+      })();
+      return await Promise.race([navigation, aborted]);
+    } finally { options.signal?.removeEventListener("abort", abort); }
   } catch (error) {
     await close();
     throw error;

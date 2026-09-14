@@ -4,10 +4,12 @@ import { createServer, connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
+import { validateRunOptions, VITEXEC_TIMEOUT_MS } from "./options.js";
 import { openPage, type OpenPageOptions } from "./page.js";
 import { run, type PageRunOptions } from "./run.js";
 
-type Request = { command: "close" } | { command: "run"; code: string; options: PageRunOptions };
+type Request = { code: string; options: PageRunOptions };
 
 async function address(name: string): Promise<string> {
   if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("Session names must contain only letters, numbers, underscores or hyphens.");
@@ -19,13 +21,11 @@ async function address(name: string): Promise<string> {
 }
 
 function send(socket: Socket, message: object) {
-  if (!socket.destroyed) socket.write(`${JSON.stringify(message)}\n`);
+  if (!socket.destroyed && !socket.writableEnded) socket.write(`${JSON.stringify(message)}\n`);
 }
 
 function request(value: unknown): Request {
-  if (typeof value !== "object" || value === null || !("command" in value)) throw new Error("Invalid session request.");
-  if (value.command === "close") return { command: "close" };
-  if (value.command !== "run" || !("code" in value) || typeof value.code !== "string" || !("options" in value)) throw new Error("Invalid run request.");
+  if (typeof value !== "object" || value === null || !("code" in value) || typeof value.code !== "string" || !("options" in value)) throw new Error("Invalid run request.");
   const options = value.options;
   if (typeof options !== "object" || options === null) throw new Error("Invalid run options.");
   const parsed: PageRunOptions = {};
@@ -50,7 +50,8 @@ function request(value: unknown): Request {
     if (extension !== ".js" && extension !== ".ts" && extension !== ".jsx" && extension !== ".tsx" && extension !== ".mjs" && extension !== ".mts") throw new Error("Invalid moduleExtension.");
     parsed.moduleExtension = extension;
   }
-  return { command: "run", code: value.code, options: parsed };
+  validateRunOptions(parsed);
+  return { code: value.code, options: parsed };
 }
 
 export async function openSession(name: string, options: OpenPageOptions): Promise<void> {
@@ -70,9 +71,10 @@ export async function openSession(name: string, options: OpenPageOptions): Promi
     lines.once("line", line => {
       void (async () => {
         const message = request(JSON.parse(line));
-        if (message.command === "close") { closing = true; stop(); return; }
-        if (closing || !page) throw new Error("Session is not ready or is closing.");
-        await run(page, message.code, { ...message.options, onLog: line => send(socket, { log: line }) });
+        const deadline = Date.now() + (message.options.timeoutMs ?? VITEXEC_TIMEOUT_MS);
+        const ready = await within(startup, deadline);
+        if (closing || socket.destroyed) throw new Error("Session is closing or client disconnected.");
+        await run(ready, message.code, { ...message.options, timeoutMs: remaining(deadline), onLog: line => send(socket, { log: line }) });
         send(socket, { done: true });
         socket.end();
       })().catch(error => {
@@ -85,15 +87,21 @@ export async function openSession(name: string, options: OpenPageOptions): Promi
     server.once("error", reject);
     server.listen(path, () => { server.off("error", reject); resolve(); });
   });
-  const signal = () => { closing = true; stop(); };
+  const controller = new AbortController();
+  const startup = (async () => {
+    if (process.platform !== "win32") await chmod(path, 0o600);
+    return openPage({ ...options, signal: controller.signal });
+  })();
+  const signal = () => { closing = true; controller.abort(new Error("Session stopped.")); stop(); };
   process.on("SIGINT", signal);
   process.on("SIGTERM", signal);
   try {
-    if (process.platform !== "win32") await chmod(path, 0o600);
-    page = await openPage(options);
-    options.onLog?.(`[ready] ${name} ${page.url()}`);
+    page = await startup;
     page.on("close", stop);
     await stopped;
+  } catch (error) {
+    for (const socket of sockets) send(socket, { error: error instanceof Error ? error.message : String(error) });
+    if (!controller.signal.aborted || error !== controller.signal.reason) throw error;
   } finally {
     closing = true;
     process.off("SIGINT", signal);
@@ -101,7 +109,7 @@ export async function openSession(name: string, options: OpenPageOptions): Promi
     try { await page?.close(); } catch (error) { closeError = error; }
     try {
       for (const socket of sockets) {
-        send(socket, closeError ? { error: String(closeError) } : { closed: true });
+        send(socket, closeError ? { error: String(closeError) } : { error: "Session stopped; execution interrupted." });
         socket.end();
       }
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
@@ -114,33 +122,59 @@ export async function openSession(name: string, options: OpenPageOptions): Promi
 
 export async function callSession(name: string, message: Request, log: (line: string) => void): Promise<void> {
   const path = await address(name);
-  await new Promise<void>((resolve, reject) => {
-    const socket = connect(path);
+  validateRunOptions(message.options);
+  const deadline = Date.now() + (message.options.timeoutMs ?? VITEXEC_TIMEOUT_MS);
+  const socket = await connectSession(path, Math.min(deadline, Date.now() + 1000));
+  await within(new Promise<void>((resolve, reject) => {
     let finished = false;
-    socket.on("connect", () => send(socket, message));
-    const failed = (error: Error) => {
-      if (message.command === "close" && (hasCode(error, "ENOENT") || hasCode(error, "ECONNREFUSED"))) {
-        finished = true; resolve(); return;
-      }
-      reject(error);
-    };
-    socket.on("error", failed);
+    socket.on("error", reject);
     socket.on("close", () => { if (!finished) reject(new Error(`Session ${name} disconnected before execution completed.`)); });
     const lines = createInterface({ input: socket });
-    lines.on("error", failed);
+    lines.on("error", reject);
     lines.on("line", line => {
       try {
         const value: unknown = JSON.parse(line);
         if (typeof value !== "object" || value === null) throw new Error("Invalid session response.");
         if ("log" in value && typeof value.log === "string") { log(value.log); return; }
         if ("error" in value && typeof value.error === "string") throw new Error(value.error);
-        if ("done" in value || ("closed" in value && message.command === "close")) {
-          finished = true; resolve(); socket.end(); return;
+        if ("done" in value && value.done === true) {
+          finished = true; resolve(); return;
         }
-        throw new Error("Session closed; execution interrupted.");
-      } catch (error) { finished = true; reject(error); socket.destroy(); }
+        throw new Error("Invalid session response.");
+      } catch (error) { finished = true; reject(error); }
     });
-  });
+    send(socket, { ...message, options: { ...message.options, timeoutMs: remaining(deadline) } });
+  }), deadline).finally(() => socket.destroy());
+}
+
+async function connectSession(path: string, deadline: number): Promise<Socket> {
+  for (;;) {
+    try {
+      return await new Promise<Socket>((resolve, reject) => {
+        const socket = connect(path);
+        socket.once("error", reject);
+        socket.once("connect", () => { socket.off("error", reject); resolve(socket); });
+      });
+    } catch (error) {
+      if ((!hasCode(error, "ENOENT") && !hasCode(error, "ECONNREFUSED")) || Date.now() >= deadline) throw error;
+      await delay(Math.min(25, remaining(deadline)));
+    }
+  }
+}
+
+function remaining(deadline: number): number {
+  const ms = deadline - Date.now();
+  if (ms <= 0) throw new Error("Session run timed out.");
+  return ms;
+}
+
+async function within<T>(promise: Promise<T>, deadline: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Session run timed out.")), remaining(deadline));
+    })]);
+  } finally { clearTimeout(timer); }
 }
 
 function hasCode(error: unknown, code: string): boolean {
