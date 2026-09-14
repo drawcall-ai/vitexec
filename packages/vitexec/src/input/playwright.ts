@@ -30,12 +30,15 @@ export type Input = {
 
 const inputs = new WeakMap<Page, Input>();
 
-export async function installInput(page: Page): Promise<Input> {
+export async function installInput(page: Page, authorize?: (stack?: string) => void): Promise<Input> {
   const existing = inputs.get(page);
   if (existing) return existing;
 
   const input = createInput(page);
-  await page.exposeBinding(INPUT_BINDING, (_source, command: InputCommand) => input.run(command));
+  await page.exposeBinding(INPUT_BINDING, (_source, command: InputCommand, stack?: string) => {
+    authorize?.(stack);
+    return input.run(command);
+  });
   inputs.set(page, input);
   return input;
 }

@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 import spawn from "nano-spawn";
 import type { Browser } from "playwright";
 
-export type CreateBrowserOptions = {
+export type OpenBrowserOptions = {
+  /** Hide the browser window. Defaults to true. */
+  headless?: boolean;
   browserArgs?: string[];
   browserExposeNetwork?: string;
   browserWsEndpoint?: string;
@@ -12,6 +14,8 @@ export type CreateBrowserOptions = {
   gpu?: boolean;
   /** Enable page audio, including audio recordings. Defaults to true. */
   audio?: boolean;
+  /** Let Playwright handle process signals. Disable when the caller owns shutdown. */
+  handleSignals?: boolean;
   log?: (line: string) => void;
 };
 
@@ -26,11 +30,15 @@ export const VITEXEC_REMOTE_GPU_BROWSER_ARGS = [
 ] as const;
 
 /** Create or connect to Chromium. The caller closes the returned browser. */
-export async function createBrowser(options: CreateBrowserOptions = {}): Promise<Browser> {
+export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright");
   const args = createBrowserArgs({ ...options, gpu: options.gpu ?? true });
   const launchOptions = {
+    headless: options.headless ?? true,
     args,
+    handleSIGINT: options.handleSignals,
+    handleSIGTERM: options.handleSignals,
+    handleSIGHUP: options.handleSignals,
     ...(options.audio !== false ? { ignoreDefaultArgs: ["--mute-audio"] } : {})
   };
   if (options.browserWsEndpoint) {
@@ -44,7 +52,7 @@ export async function createBrowser(options: CreateBrowserOptions = {}): Promise
 }
 
 export function createRemoteBrowserHeaders(
-  options: Pick<CreateBrowserOptions, "browserArgs" | "gpu"> & { recordAudio?: boolean; recordPath?: string }
+  options: Pick<OpenBrowserOptions, "browserArgs" | "gpu"> & { recordAudio?: boolean; recordPath?: string }
 ): Record<string, string> | undefined {
   const args = createBrowserArgs(options);
   if (!args && !recordsAudio(options)) return undefined;
@@ -62,7 +70,7 @@ function recordsAudio(options: { recordAudio?: boolean; recordPath?: string }): 
 }
 
 export function createBrowserArgs(
-  options: Pick<CreateBrowserOptions, "browserArgs" | "gpu">
+  options: Pick<OpenBrowserOptions, "browserArgs" | "gpu">
 ): string[] | undefined {
   const args = [
     ...(options.gpu ? VITEXEC_LOCAL_GPU_BROWSER_ARGS : []),

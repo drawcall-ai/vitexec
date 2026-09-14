@@ -1,6 +1,6 @@
-import { chromium, type Page } from "playwright";
+import { type Page } from "playwright";
 import { afterEach, describe, expect, it } from "vitest";
-import { runVitexec } from "../src/cli.js";
+import { openPage, run as execute } from "../src/cli.js";
 import {
   MOUSE_EVENT_HZ,
   MOUSE_SPEED_PX_PER_S
@@ -34,9 +34,9 @@ const APP = {
 
 async function run(code: string, page?: Page): Promise<string> {
   const lines: string[] = [];
-  for await (const line of runVitexec(code, { configFile: false, page, root: project?.root })) {
-    lines.push(line);
-  }
+  const target = page ?? await openPage({ configFile: false, root: project?.root, gpu: false });
+  try { await execute(target, code, { onLog: line => lines.push(line) }); }
+  finally { if (!page) await target.close(); }
   return lines.join("\n");
 }
 
@@ -132,8 +132,7 @@ describe("human input", () => {
 
   it("allows long holds and releases leased and unfinished controls", async () => {
     project = await createTempViteProject(APP);
-    const browser = await chromium.launch({ channel: "chromium" });
-    const page = await browser.newPage();
+    const page = await openPage({ configFile: false, root: project.root, gpu: false });
     try {
       const output = await run(`
         import { keyboard, mouse } from "vitexec";
@@ -151,7 +150,7 @@ describe("human input", () => {
       expect(events).toContain("keyup:KeyA");
       expect(events).toContain("up:2");
     } finally {
-      await browser.close();
+      await page.close();
     }
   });
 });

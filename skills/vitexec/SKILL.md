@@ -1,13 +1,13 @@
 ---
 name: vitexec
-description: Use this skill when an AI agent needs to inspect, verify, debug, profile, or play through a live Vite app by running temporary scripts against the browser page and reading browser logs or captured artifacts. Use for client state after interactions, imported app modules, DOM state, human-like input, canvas/WebGL/Three.js state, screenshots, videos, CPU/network/performance/heap analysis, WebXR/Three.js XR with IWER, and runtime-only behavior without editing app files.
+description: Inspect, verify, interact with, or profile a live Vite app by running temporary scripts in its browser page. Use for runtime state, physical input, browser logs, screenshots, recordings, and performance artifacts; prefer static inspection for questions the source can answer.
 ---
 
 # vitexec
 
 Use `vitexec` when the truth lives in the running browser: client state, imported app modules, DOM, canvas/WebGL, screenshots, recordings, or browser-only errors.
 
-Do not use it for questions static files, unit tests, or TypeScript can answer directly.
+Prefer static files, unit tests, or TypeScript for questions they can answer directly.
 
 ## References
 
@@ -19,8 +19,8 @@ Do not use it for questions static files, unit tests, or TypeScript can answer d
 
 1. Identify the page path if it is not `/`.
 2. Write the smallest snippet that performs the user-like action or reads the browser-only state.
-3. Run `vitexec '<snippet>'` or `vitexec check.ts` for `./vitexec/check.ts`, adding `--path`, `--gpu`, `--screenshot`, `--record`, `--cpu-profile`, `--network-trace`, `--performance-trace`, `--heap-snapshot`, `--timeout`, or `--config` only when needed.
-4. Treat stdout as browser logs. It starts with `logs:`.
+3. Run `vitexec '<snippet>'` or `vitexec check.ts` for `./vitexec/check.ts`.
+4. Inspect the logs and exit status. A script failure or timeout exits nonzero; printed errors are not successful completion.
 
 If `vitexec` itself is missing, install `vitexec` with the package manager already used by the project.
 
@@ -49,12 +49,48 @@ vitexec --path /cart '
 '
 ```
 
+Browser windows are hidden by default. When the user wants to watch, add `--headed`
+to the one-shot command or `open`, not `run`. Programmatically, pass
+`headless: false` to `openPage` or `openBrowser`. For remote launches, the window appears on the remote host; connecting to an
+already-running browser does not change its visibility.
+
+## Reusing a page
+
+Use a session when later scripts need the state created by earlier actions:
+
+```sh
+vitexec open game
+vitexec run game setup.ts
+vitexec run game play.ts
+```
+
+Start `open` with the agent's background-terminal tool; it remains in the foreground
+and streams ordinary page diagnostics. `run` waits for page startup automatically.
+Use the same working directory for all commands. Browser/Vite/viewport options go
+on `open`; per-run screenshots, recordings, and profiles go on `run`.
+
+Each `run` waits for execution and streams console logs traceable to its script.
+App logs without an identifiable script stack stay in `open`, including some logs
+triggered by physical input. Check that output when investigating app failures.
+Scripts should await the work whose logs they need. After an execution timeout, stop and restart
+the session: the old code may still be running.
+
+Separate `run` calls may overlap for observation alongside input. They share the same
+page; use one input driver at a time. Recording/profiling operations cannot overlap.
+When done, stop the `open` process with SIGINT or SIGTERM and await its exit;
+it closes the page, browser, and server.
+
+For programmatic composition, use `const page = await openPage(options)`,
+`await run(page, code, { onLog })`, and `await page.close()` in `finally`.
+`openPage` owns its server and browser; its `onLog` receives page diagnostics.
+`run` only injects into an existing Chromium page and never navigates or closes it.
+
 ## Guidance
 
 - Prefer importing exported app state over scraping DOM when state is available.
-- Use direct state reads for observation and assertions, not to bypass user interaction.
-- Use `mouse` and `keyboard` from `vitexec` for physical input; do not substitute synthetic DOM events.
-- `--timeout` covers boot, physical input, and script time; budget wall time, not only application time.
+- Prefer direct state reads for assertions; use physical input when verifying user interactions.
+- Use `mouse` and `keyboard` from `vitexec` for physical input; synthetic DOM events do not verify the same behavior.
+- `--timeout` budgets navigation on `open` and connection, startup, and execution on `run`; budget physical-input wall time, not only application time.
 - Use live progress logs and focused assertions to early-exit on failures and see current progress.
 - Keep logs concise; overly verbose logs become unreadable and unnecessarily fill the context.
 - Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.
@@ -62,7 +98,7 @@ vitexec --path /cart '
 - If the local machine has no usable GPU, use `--gpu --browser-ws-endpoint <ws-url>` to connect to a remote Playwright server that was started with the right host-specific GPU settings.
 - If repeated runs need the same endpoint or artifact settings, prefer `VITEXEC_*` environment variables over repeating long flags.
 - Use screenshots or recordings only when visual evidence matters.
-- Do not leave temporary code in the app when `vitexec` can inspect it from outside.
+- Prefer temporary Vitexec scripts over adding inspection code to the app.
 
 ## Project integration
 
@@ -87,12 +123,7 @@ declarations are safe and deduplicated; conflicting page mappings fail clearly.
 
 ## Reading a screenshot as proof
 
-A screenshot is only proof if you read it critically — "something rendered" is not "it works and looks right". When the evidence is a screenshot or clip, look at it for tells of unfinished work and treat any you find as a defect to fix, not as proof of done:
-
-- A character standing in a **T-pose** (or not animating) — its rig/animation isn't driving the model.
-- **Flat solid-color boxes/planes** standing in for real objects — placeholder geometry that needs a real asset or material.
-- **Untextured surfaces** (a flat-color ground, gray "clay") — missing materials.
-- Objects that **float** with no contact shadow — missing shadows or grounding.
-- A **flat, raw render** with no finishing pass.
-
-Pair the picture with state assertions: confirm the player-visible *outcome* from real app state (the count changed, the entity was removed, the animation state advanced), not just that the frame drew.
+Inspect screenshots or recordings against the requested outcome: a rendered frame
+alone does not prove correct behavior. Check visual defects relevant to the app,
+and pair visual evidence with state assertions when possible (for example, the
+count changed, an entity disappeared, or the animation advanced).
