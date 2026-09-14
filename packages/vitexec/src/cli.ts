@@ -13,6 +13,8 @@ export { createBrowser, createBrowserArgs, createRemoteBrowserHeaders, ensureChr
   VITEXEC_DEFAULT_REMOTE_EXPOSE_NETWORK, VITEXEC_LOCAL_GPU_BROWSER_ARGS,
   VITEXEC_REMOTE_GPU_BROWSER_ARGS } from "./browser.js";
 export type { CreateBrowserOptions } from "./browser.js";
+export { createServer } from "./app.js";
+export type { CreateServerOptions } from "./app.js";
 export { run, VITEXEC_TIMEOUT_MS } from "./run.js";
 export type { AppRunOptions, PageRunOptions } from "./run.js";
 export type { VitexecModuleExtension };

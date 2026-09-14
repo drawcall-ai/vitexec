@@ -1,0 +1,33 @@
+:root { font-family: ui-sans-serif, system-ui, sans-serif; color: #1b2428; background: #f7f1e8; }
+* { box-sizing: border-box; }
+body { margin: 0; }
+main { width: min(640px, 100%); margin: 48px auto; padding: 0 24px; }
+h1 { font-size: clamp(28px, 5vw, 38px); line-height: 1.1; letter-spacing: -0.03em; margin: 0 0 12px; }
+p { line-height: 1.5; margin: 0; }
+header { margin-bottom: 32px; }
+#progress { display: flex; list-style: none; gap: 24px; padding: 0 0 16px; border-bottom: 1px solid #c5beb2; }
+#progress li { color: #605b54; }
+#progress [aria-current] { color: #1b2428; font-weight: 750; }
+#progress .complete { color: #247044; }
+h2 { font-size: 22px; margin: 28px 0 6px; }
+#hint { min-height: 48px; color: #605b54; }
+.board { display: grid; grid-template: repeat(3, 1fr) / repeat(5, 1fr); gap: 12px; aspect-ratio: 5 / 3; margin-top: 20px; background: #ede5d8; padding: 12px; border-radius: 12px; }
+[hidden] { display: none !important; }
+.board > * { display: grid; place-items: center; font-size: clamp(10px, 2vw, 14px); font-weight: 750; text-align: center; }
+#player { background: #1b2428; border-radius: 50%; margin: 12%; }
+.wall { background: #c5beb2; border-radius: 4px; }
+.exit, #dock { color: #185032; background: #c4dfc5; border: 2px dashed #247044; border-radius: 6px; }
+button { font: inherit; color: inherit; cursor: pointer; }
+button:focus-visible, #game:focus-visible { outline: 3px solid #247044; outline-offset: 4px; }
+[data-target] { border: 0; border-radius: 50%; background: #a93626; color: white; font-size: 24px; }
+[data-target]:hover { background: #8c2b1e; }
+[data-target]:disabled { background: #c5beb2; color: #605b54; cursor: default; }
+#parcel { background: #a93626; color: white; border-radius: 6px; cursor: grab; touch-action: none; user-select: none; z-index: 1; }
+#parcel:active { cursor: grabbing; }
+.won { place-items: center; background: #c4dfc5; color: #185032; }
+.won p { grid-area: 1 / 1 / 4 / 6; font-size: clamp(22px, 4vw, 32px); }
+#arrows { display: flex; gap: 8px; margin-top: 16px; }
+#arrows button, #restart { background: transparent; border: 1px solid #92897d; border-radius: 6px; padding: 8px 12px; min-height: 44px; }
+#arrows button:hover, #restart:hover { background: #e5dccd; }
+footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 24px; font-size: 14px; }
+@media (max-width: 480px) { main { margin: 28px auto; padding: 0 16px; } .board { gap: 6px; padding: 8px; } #progress { gap: 18px; } footer { align-items: flex-start; flex-direction: column; } }
