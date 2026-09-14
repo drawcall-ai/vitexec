@@ -50,6 +50,10 @@ async function readJson(path: string): Promise<unknown> {
 }
 
 describe("vitexec CLI runner", () => {
+  it("maps --headed to the browser launch option", () => {
+    expect(createRunOptions({ headed: true }, { env: {} }).headless).toBe(false);
+    expect(createRunOptions({}, { env: {} }).headless).toBeUndefined();
+  });
   it("returns browser logs for injected code", async () => {
     currentProject = await createTempViteProject({
       "index.html": "<main>ready</main>"

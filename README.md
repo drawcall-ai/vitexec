@@ -183,6 +183,7 @@ same path under `./vitexec`, and otherwise treats it as inline code. Thus
 |---|---|
 | `--path /scene` | Open a specific route |
 | `--config ./vite.config.ts` | Use a specific Vite config |
+| `--headed` | Show the browser window (headless by default); available for one-shot execution and `open` |
 | `--gpu` | Use generic GPU/WebGPU-friendly Chromium flags |
 | `--browser-ws-endpoint wss://...` | Connect to a Playwright browser WebSocket endpoint |
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
@@ -239,6 +240,10 @@ for `open` and `run`. Duplicate live names fail instead of replacing pages.
 Separate `run` commands can overlap. Each command waits for its script and prints
 its attributed logs. Stop the foreground `open` process with SIGINT or SIGTERM
 to interrupt active runs and close its page, browser, and server.
+
+Use `vitexec open game --headed` to watch a session, or `vitexec script.ts --headed`
+for one execution. Visibility does not change execution or cleanup. For remote launches, the window opens on the remote host; connecting to an
+already-running browser does not change its visibility.
 
 Browser, Vite, path, viewport, touch, and network-trace options belong to `open`.
 Screenshot, recording, and profiling options belong to `run`. `--timeout` sets the
@@ -320,6 +325,9 @@ an action produces unexpected app behavior. CDP attribution requires Chromium.
 await their work. Script exceptions, callback failures, and timeouts reject the
 promise and make the CLI exit nonzero. Timeout stops waiting, not arbitrary browser
 JavaScript: after a timeout, close and reopen the page before another run.
+
+Pass `headless: false` to `openPage` or `openBrowser` to show the browser window.
+The default is `true`; `run` uses the supplied page’s existing visibility.
 
 Concurrent runs share DOM, globals, and input. Use `Promise.all` or separate CLI
 calls to observe while driving. Only one run may own input at a time; another driver

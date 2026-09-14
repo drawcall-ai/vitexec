@@ -25,6 +25,7 @@ export const VITEXEC_ENV = {
 type Environment = Record<string, string | undefined>;
 
 export type CliOptions = {
+  headed?: boolean;
   browserArg?: string[];
   browserExposeNetwork?: string;
   browserWsEndpoint?: string;
@@ -59,6 +60,7 @@ export function createRunOptions(
   );
 
   return {
+    headless: options.headed ? false : undefined,
     ...(browserArgs ? { browserArgs } : {}),
     browserExposeNetwork: options.browserExposeNetwork ?? envString(env, VITEXEC_ENV.browserExposeNetwork),
     browserWsEndpoint: options.browserWsEndpoint ?? envString(env, VITEXEC_ENV.browserWsEndpoint),
@@ -167,6 +169,7 @@ export function addOptions(command: Command, scope: "open" | "run" | "once"): Co
       .option("--browser-expose-network <rules>", "network rules exposed to a remote browser")
       .option("--browser-ws-endpoint <url>", "remote Playwright browser endpoint")
       .option("--config <path>", "Vite config file")
+      .option("--headed", "show the browser window")
       .option("--gpu", "enable GPU-friendly Chromium flags")
       .option("--network-trace <path>", "write a HAR when the app closes")
       .option("--path <path>", "Vite page path")

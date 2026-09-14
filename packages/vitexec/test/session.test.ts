@@ -198,7 +198,9 @@ describe("session CLI", () => {
   });
 
   it("provides subcommand help and rejects options for the wrong lifecycle", async () => {
-    expect((await launch(["open", "--help"]).done).output).toContain("Usage: vitexec open");
+    expect((await launch(["open", "--help"]).done).output).toContain("--headed");
+    expect((await launch(["--help"]).done).output).toContain("--headed");
+    expect((await launch(["run", "game", "", "--headed"]).done).code).toBe(1);
     expect((await launch(["run", "game", "", "--viewport", "100x100"]).done).code).toBe(1);
     expect((await launch(["open", "game", "--screenshot", "unused.png"]).done).code).toBe(1);
   });

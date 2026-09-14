@@ -5,6 +5,8 @@ import spawn from "nano-spawn";
 import type { Browser } from "playwright";
 
 export type OpenBrowserOptions = {
+  /** Hide the browser window. Defaults to true. */
+  headless?: boolean;
   browserArgs?: string[];
   browserExposeNetwork?: string;
   browserWsEndpoint?: string;
@@ -32,6 +34,7 @@ export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Bro
   const { chromium } = await import("playwright");
   const args = createBrowserArgs({ ...options, gpu: options.gpu ?? true });
   const launchOptions = {
+    headless: options.headless ?? true,
     args,
     handleSIGINT: options.handleSignals,
     handleSIGTERM: options.handleSignals,
