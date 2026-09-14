@@ -94,8 +94,8 @@ For programmatic composition, use `const page = await openPage(options)`,
 - Use live progress logs and focused assertions to early-exit on failures and see current progress.
 - Keep logs concise; overly verbose logs become unreadable and unnecessarily fill the context.
 - Prefer browser-root imports such as `/src/store.ts`, not local filesystem paths.
-- Use `--gpu` for WebGL, canvas, Three.js, and WebXR behavior.
-- If the local machine has no usable GPU, use `--gpu --browser-ws-endpoint <ws-url>` to connect to a remote Playwright server that was started with the right host-specific GPU settings.
+- GPU acceleration is enabled by default. Use `--no-gpu` (API: `gpu: false`) when testing without hardware acceleration; it belongs to browser creation, not session `run`.
+- If the local machine has no usable GPU, use `--browser-ws-endpoint <ws-url>` to connect to a remote Playwright server that was started with the right host-specific GPU settings.
 - If repeated runs need the same endpoint or artifact settings, prefer `VITEXEC_*` environment variables over repeating long flags.
 - Use screenshots or recordings only when visual evidence matters.
 - Prefer temporary Vitexec scripts over adding inspection code to the app.

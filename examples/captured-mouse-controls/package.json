@@ -7,7 +7,7 @@
     "build": "vite build",
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "vitexec": "vitexec --gpu captured-mouse-turn.ts"
+    "vitexec": "vitexec captured-mouse-turn.ts"
   },
   "devDependencies": {
     "typescript": "^5.8.3",

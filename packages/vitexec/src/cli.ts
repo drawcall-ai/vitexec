@@ -43,7 +43,7 @@ async function execute(parts: string[], options: CliOptions, session?: string) {
   let hasLogs = false;
   const onLog = (line: string) => { hasLogs = true; print(line); };
   const page = await openPage({
-    ...settings, gpu: settings.gpu ?? false,
+    ...settings,
     audio: Boolean(settings.recordPath) && settings.recordAudio !== false, onLog
   });
   try { await run(page, input.code, { ...settings, onLog }); }

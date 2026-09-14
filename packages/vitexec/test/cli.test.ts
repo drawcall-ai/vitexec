@@ -800,7 +800,7 @@ describe("vitexec CLI runner", () => {
   });
 
   it("sends generic GPU launch options to remote Playwright browser servers", () => {
-    expect(createRemoteBrowserHeaders({ gpu: false })).toBeUndefined();
+    expect(JSON.parse(createRemoteBrowserHeaders({ gpu: false })["x-playwright-launch-options"])).toEqual({ args: ["--disable-gpu"] });
 
     const headers = createRemoteBrowserHeaders({ gpu: true });
     const launchOptions = JSON.parse(
@@ -820,7 +820,7 @@ describe("vitexec CLI runner", () => {
       headers?.["x-playwright-launch-options"] ?? "null"
     );
 
-    expect(launchOptions).toEqual({ ignoreDefaultArgs: ["--mute-audio"] });
+    expect(launchOptions).toEqual({ args: VITEXEC_REMOTE_GPU_BROWSER_ARGS, ignoreDefaultArgs: ["--mute-audio"] });
   });
 
   it("keeps remote Chromium muted for video-only recordings", () => {
@@ -829,7 +829,7 @@ describe("vitexec CLI runner", () => {
       recordPath: "recording.mp4"
     });
 
-    expect(headers).toBeUndefined();
+    expect(JSON.parse(headers["x-playwright-launch-options"])).toEqual({ args: VITEXEC_REMOTE_GPU_BROWSER_ARGS });
   });
 
   it("can add custom browser launch args locally and remotely", () => {

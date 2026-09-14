@@ -170,7 +170,9 @@ export function addOptions(command: Command, scope: "open" | "run" | "once"): Co
       .option("--browser-ws-endpoint <url>", "remote Playwright browser endpoint")
       .option("--config <path>", "Vite config file")
       .option("--headed", "show the browser window")
-      .option("--gpu", "enable GPU-friendly Chromium flags")
+      .option("--no-gpu", "disable GPU hardware acceleration")
+      // Leave the default to browser creation so VITEXEC_GPU can still apply.
+      .setOptionValue("gpu", undefined)
       .option("--network-trace <path>", "write a HAR when the app closes")
       .option("--path <path>", "Vite page path")
       .option("--touch", "emulate touch input")

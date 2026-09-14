@@ -14,7 +14,7 @@ State access is for understanding and assertions, not bypassing interaction.
 ## Shape
 
 ```sh
-vitexec --gpu ./vitexec/webxr-test.ts
+vitexec ./vitexec/webxr-test.ts
 ```
 
 ```ts
