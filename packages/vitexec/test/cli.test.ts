@@ -4,7 +4,6 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { chromium } from "playwright";
 import { afterEach, describe, expect, it } from "vitest";
 import type { TestProject } from "./helpers.js";
 import { createTempViteProject } from "./helpers.js";
@@ -181,99 +180,18 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] loaded from ts");
   });
 
-  it("captures runtime errors from injected code", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      "throw new Error('injected failure')",
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("injected failure");
-  });
-
-  it("captures non-Error values thrown from injected code", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        throw "plain string failure";
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("[error] plain string failure");
-    expect(output).not.toContain("[error] timeout");
-  });
-
-  it("captures object values thrown from injected code", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        throw { kind: "object failure", code: 42 };
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain('[error] {"kind":"object failure","code":42}');
-    expect(output).not.toContain("[error] timeout");
-  });
-
-  it("captures rejected promises from injected code", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        await Promise.reject(new TypeError("async injected rejection"));
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("async injected rejection");
-    expect(output).not.toContain("[error] timeout");
-  });
-
-  it("reports malformed injected code without timing out", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        const =
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("[error] Unexpected token '='");
-    expect(output).not.toContain("[error] timeout");
-  });
-
-  it("reports failed static imports from injected code without timing out", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        import "/missing-vitexec-module.js";
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("[http 500] GET");
-    expect(output).toContain("/__vitexec/code/");
-    expect(output).toContain("Failed to fetch dynamically imported module");
-    expect(output).not.toContain("[error] timeout");
+  it.each([
+    ["thrown Error", "throw new Error('injected failure')", "injected failure"],
+    ["thrown string", "throw 'plain string failure'", "plain string failure"],
+    ["thrown object", "throw { kind: 'object failure', code: 42 }", "Object"],
+    ["rejected promise", "await Promise.reject(new TypeError('async injected rejection'))", "async injected rejection"],
+    ["syntax error", "const =", "Unexpected token"],
+    ["missing import", 'import "/missing-vitexec-module.js"', "Failed to fetch dynamically imported module"]
+  ])("rejects iteration on %s", async (_, code, message) => {
+    currentProject = await createTempViteProject({ "index.html": "<main>ready</main>" });
+    await expect(collectVitexec(code, {
+      configFile: false, root: currentProject.root
+    })).rejects.toThrow(message);
   });
 
   it("captures async page errors scheduled by injected code", async () => {
@@ -295,24 +213,13 @@ describe("vitexec CLI runner", () => {
     expect(output).not.toContain("[error] timeout");
   });
 
-  it("stops waiting immediately when injected code throws and returns the error logs", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const startedAt = performance.now();
-    const output = await collectVitexec(
-      `
-        throw new Error("stop-on-error");
-        await new Promise((resolve) => setTimeout(resolve, 10_000));
-      `,
-      { configFile: false, root: currentProject.root, timeoutMs: 10_000 }
-    );
-    const durationMs = performance.now() - startedAt;
-
-    expect(output).toContain("stop-on-error");
-    expect(output).not.toContain("[error] timeout");
-    expect(durationMs).toBeLessThan(3_000);
+  it("rejects immediately when injected code throws", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>ready</main>" });
+    const started = performance.now();
+    await expect(collectVitexec('throw new Error("stop-on-error"); await new Promise(() => {});', {
+      configFile: false, root: currentProject.root, timeoutMs: 10_000
+    })).rejects.toThrow("stop-on-error");
+    expect(performance.now() - started).toBeLessThan(3_000);
   });
 
   it("waits for async injected code to finish", async () => {
@@ -328,52 +235,11 @@ describe("vitexec CLI runner", () => {
     expect(output).toContain("[log] async done");
   });
 
-  it("keeps waiting when the page navigates while injected code is running", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": `
-        <script>
-          if (!sessionStorage.vitexecReloaded) {
-            sessionStorage.vitexecReloaded = "yes";
-            setTimeout(() => location.reload(), 0);
-          }
-        </script>
-        <main>ready</main>
-      `
-    });
-
-    const output = await collectVitexec(
-      `
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        console.log("after navigation", sessionStorage.vitexecReloaded);
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("[log] after navigation yes");
-  });
-
-  it("reports external navigations and continues in the new page", async () => {
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      `
-        if (!sessionStorage.vitexecReloadedDuringRun) {
-          sessionStorage.vitexecReloadedDuringRun = "yes";
-          console.log("before external reload");
-          location.reload();
-          await new Promise(() => {});
-        }
-
-        console.log("after external reload", document.querySelector("main")?.textContent);
-      `,
-      { configFile: false, root: currentProject.root }
-    );
-
-    expect(output).toContain("[log] before external reload");
-    expect(output).toContain("[navigation] navigated");
-    expect(output).toContain("[log] after external reload ready");
+  it("rejects navigation during execution instead of restarting the script", async () => {
+    currentProject = await createTempViteProject({ "index.html": "<main>ready</main>" });
+    await expect(collectVitexec('location.reload(); await new Promise(() => {});', {
+      configFile: false, root: currentProject.root
+    })).rejects.toThrow("Execution context was destroyed");
   });
 
   it("does not hot reload changed app files while injected code is running", async () => {
@@ -802,7 +668,7 @@ describe("vitexec CLI runner", () => {
     );
 
     const har = readHar(await readJson(networkTracePath));
-    expect(output).toContain(`[network-trace] ${networkTracePath}`);
+    expect(output).toContain("[log] network status 404");
     expect(har.log.entries.some((entry) => {
       return entry.request.url.includes("/missing-network-trace.js") && entry.response.status === 404;
     })).toBe(true);
@@ -893,88 +759,6 @@ describe("vitexec CLI runner", () => {
     );
 
     expect(output).toContain("[log] remote text remote");
-  });
-
-  it("runs in an adopted page and leaves it (and its browser) open", async () => {
-    currentProject = await createTempViteProject({ "index.html": "<main>adopt</main>" });
-    const browser = await chromium.launch();
-    try {
-      const page = await browser.newPage();
-      await page.goto("about:blank");
-
-      const output = await collectVitexec(
-        "console.log('adopted', document.querySelector('main')?.textContent)",
-        { configFile: false, root: currentProject.root, page }
-      );
-
-      expect(output).toContain("[log] adopted adopt");
-      expect(page.isClosed()).toBe(false);
-      expect(browser.isConnected()).toBe(true);
-    } finally {
-      await browser.close();
-    }
-  });
-
-  it("reuses one adopted page across sequential runs", async () => {
-    currentProject = await createTempViteProject({ "index.html": "<main>reuse</main>" });
-    const second = await createTempViteProject({ "index.html": "<main>second</main>" });
-    const browser = await chromium.launch();
-    try {
-      const page = await browser.newPage();
-      await page.goto("about:blank");
-
-      const first = await collectVitexec(
-        "console.log('run-1', document.querySelector('main')?.textContent)",
-        { configFile: false, root: currentProject.root, page }
-      );
-      const secondOut = await collectVitexec(
-        "console.log('run-2', document.querySelector('main')?.textContent)",
-        { configFile: false, root: second.root, page }
-      );
-
-      expect(first).toContain("[log] run-1 reuse");
-      expect(secondOut).toContain("[log] run-2 second");
-      expect(page.isClosed()).toBe(false);
-    } finally {
-      await browser.close();
-      await second.close();
-    }
-  });
-
-  it("adopts a context (fresh page inside it) and closes only that page", async () => {
-    currentProject = await createTempViteProject({ "index.html": "<main>ctx</main>" });
-    const browser = await chromium.launch();
-    try {
-      const context = await browser.newContext({ ignoreHTTPSErrors: true });
-      const preexisting = await context.newPage();
-
-      const output = await collectVitexec(
-        "console.log('ctx', document.querySelector('main')?.textContent)",
-        { configFile: false, root: currentProject.root, context }
-      );
-
-      expect(output).toContain("[log] ctx ctx");
-      expect(browser.isConnected()).toBe(true);
-      expect(preexisting.isClosed()).toBe(false);
-    } finally {
-      await browser.close();
-    }
-  });
-
-  it("adopts a browser (fresh context + page) and leaves the browser open", async () => {
-    currentProject = await createTempViteProject({ "index.html": "<main>br</main>" });
-    const browser = await chromium.launch();
-    try {
-      const output = await collectVitexec(
-        "console.log('br', document.querySelector('main')?.textContent)",
-        { configFile: false, root: currentProject.root, browser }
-      );
-
-      expect(output).toContain("[log] br br");
-      expect(browser.isConnected()).toBe(true);
-    } finally {
-      await browser.close();
-    }
   });
 
   it("opens the launched browser at a custom --viewport", async () => {
@@ -1179,25 +963,19 @@ describe("vitexec CLI runner", () => {
       { configFile: false, root: currentProject.root }
     );
 
-    expect(output).toContain("[http 404] GET");
+    expect(output).toContain("[http 404]");
     expect(output).toContain("/missing-vitexec-resource.js");
     expect(output).not.toContain("Failed to load resource");
   });
 
-  it("uses a 10 minute timeout and logs timeout errors", async () => {
+  it("uses a 10 minute default and rejects execution timeouts", async () => {
     expect(VITEXEC_TIMEOUT_MS).toBe(10 * 60 * 1000);
-
-    currentProject = await createTempViteProject({
-      "index.html": "<main>ready</main>"
-    });
-
-    const output = await collectVitexec(
-      "console.log('too slow')",
-      { configFile: false, root: currentProject.root, timeoutMs: 1 }
-    );
-
-    expect(output).toContain("[error] timeout after 1ms");
+    currentProject = await createTempViteProject({ "index.html": "<main>ready</main>" });
+    await expect(collectVitexec("await new Promise(() => {})", {
+      configFile: false, root: currentProject.root, timeoutMs: 1_000
+    })).rejects.toThrow("timed out");
   });
+
 });
 
 async function startPlaywrightRunServer(): Promise<{

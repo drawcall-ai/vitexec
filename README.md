@@ -329,8 +329,9 @@ Overlapping recording/profiling requests are rejected; screenshots capture the
 shared page at the moment they are taken.
 
 `createBrowser` and `createServer` remain aliases at the published compatibility
-boundary. The deprecated `runVitexec` async generator keeps its legacy navigation,
-logging, and adoption behavior. New code should use `openPage`, `run(page, ...)`,
+boundary. The deprecated `runVitexec` async generator wraps `openPage` and `run`,
+streams their logs, and closes the page when iteration ends. Errors reject iteration;
+scripts are not restarted after navigation. For a page you already own, use `run(page, ...)`. New code should use `openPage`, `run(page, ...)`,
 and `page.close()`; the CLI uses this new lifecycle too.
 
 See the [three-level game example](./examples/level-injection) for successive
