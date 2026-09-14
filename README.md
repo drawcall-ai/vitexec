@@ -112,7 +112,7 @@ running under the normal Vite dev server and production build.
 ## Example
 
 ```sh
-vitexec --gpu --path /scene '
+vitexec --path /scene '
   import { keyboard } from "vitexec";
   import { app } from "/src/app.ts";
 
@@ -139,7 +139,7 @@ facade runs in the page while its actions are delivered by Playwright, so the
 app receives trusted Chromium events instead of synthetic DOM events.
 
 ```sh
-vitexec --gpu play.ts
+vitexec play.ts
 ```
 
 ```ts
@@ -171,8 +171,8 @@ compatible Playwright Chromium builds can grant pointer lock in headless mode.
 ## Commands
 
 ```sh
-vitexec --gpu --path /scene 'console.log(location.pathname)'
-vitexec --gpu --path /scene check-scene.ts
+vitexec --path /scene 'console.log(location.pathname)'
+vitexec --path /scene check-scene.ts
 ```
 
 For a single argument, vitexec first checks the path as written, then checks the
@@ -184,7 +184,7 @@ same path under `./vitexec`, and otherwise treats it as inline code. Thus
 | `--path /scene` | Open a specific route |
 | `--config ./vite.config.ts` | Use a specific Vite config |
 | `--headed` | Show the browser window (headless by default); available for one-shot execution and `open` |
-| `--gpu` | Use generic GPU/WebGPU-friendly Chromium flags |
+| `--no-gpu` | Disable GPU hardware acceleration (enabled by default) |
 | `--browser-ws-endpoint wss://...` | Connect to a Playwright browser WebSocket endpoint |
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
 | `--screenshot ./page.png` | Capture a full-page screenshot |
@@ -208,7 +208,7 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_BROWSER_EXPOSE_NETWORK` | `--browser-expose-network` |
 | `VITEXEC_CONFIG` | `--config` |
 | `VITEXEC_PATH` | `--path` |
-| `VITEXEC_GPU` | `--gpu` |
+| `VITEXEC_GPU` | Set `false` to disable GPU acceleration; `--no-gpu` takes precedence |
 | `VITEXEC_TIMEOUT` | `--timeout` |
 | `VITEXEC_SCREENSHOT` | `--screenshot` |
 | `VITEXEC_RECORD` | `--record` |
@@ -275,7 +275,8 @@ try {
 
 `openPage()` creates its server, browser, context, and page. It accepts configuration,
 not borrowed resource handles. GPU-friendly flags and audio are enabled by default;
-use `gpu: false` or `audio: false` to disable them. The one-shot CLI keeps GPU opt-in.
+use `gpu: false` or `audio: false` to disable them. The CLI uses the same GPU default;
+`--no-gpu` explicitly disables hardware acceleration.
 
 For explicit ownership, `openServer({ root, configFile })` returns a listening Vite
 server with injection enabled, and `openBrowser(options)` returns Chromium:

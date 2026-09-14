@@ -10,7 +10,7 @@ export type OpenBrowserOptions = {
   browserArgs?: string[];
   browserExposeNetwork?: string;
   browserWsEndpoint?: string;
-  /** Enable GPU-friendly Chromium flags. Defaults to true. */
+  /** Enable GPU hardware acceleration. Defaults to true; false disables it. */
   gpu?: boolean;
   /** Enable page audio, including audio recordings. Defaults to true. */
   audio?: boolean;
@@ -32,7 +32,7 @@ export const VITEXEC_REMOTE_GPU_BROWSER_ARGS = [
 /** Create or connect to Chromium. The caller closes the returned browser. */
 export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Browser> {
   const { chromium } = await import("playwright");
-  const args = createBrowserArgs({ ...options, gpu: options.gpu ?? true });
+  const args = createBrowserArgs(options);
   const launchOptions = {
     headless: options.headless ?? true,
     args,
@@ -53,13 +53,12 @@ export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Bro
 
 export function createRemoteBrowserHeaders(
   options: Pick<OpenBrowserOptions, "browserArgs" | "gpu"> & { recordAudio?: boolean; recordPath?: string }
-): Record<string, string> | undefined {
+): Record<string, string> {
   const args = createBrowserArgs(options);
-  if (!args && !recordsAudio(options)) return undefined;
 
   return {
     "x-playwright-launch-options": JSON.stringify({
-      ...(args ? { args } : {}),
+      args,
       ...(recordsAudio(options) ? { ignoreDefaultArgs: ["--mute-audio"] } : {})
     })
   };
@@ -71,13 +70,11 @@ function recordsAudio(options: { recordAudio?: boolean; recordPath?: string }): 
 
 export function createBrowserArgs(
   options: Pick<OpenBrowserOptions, "browserArgs" | "gpu">
-): string[] | undefined {
-  const args = [
-    ...(options.gpu ? VITEXEC_LOCAL_GPU_BROWSER_ARGS : []),
+): string[] {
+  return [
+    ...(options.gpu === false ? ["--disable-gpu"] : VITEXEC_LOCAL_GPU_BROWSER_ARGS),
     ...(options.browserArgs ?? [])
   ];
-
-  return args.length > 0 ? args : undefined;
 }
 
 type EnsureChromiumInstalledOptions = {

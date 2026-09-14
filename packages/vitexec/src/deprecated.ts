@@ -13,7 +13,7 @@ export async function* runVitexec(code: string, options: RunVitexecOptions = {})
   let page: Page | undefined;
   const task = (async () => {
     try {
-      page = await openPage({ ...options, gpu: options.gpu ?? false, onLog, signal: abort.signal });
+      page = await openPage({ ...options, onLog, signal: abort.signal });
       await run(page, code, { ...options, onLog });
     } catch (error) {
       // Ending iteration cancels startup or closes the running page.
