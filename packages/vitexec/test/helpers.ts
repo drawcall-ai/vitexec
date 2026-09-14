@@ -8,12 +8,10 @@ export interface TestProject {
 }
 
 export async function createTempViteProject(
-  files: Record<string, string>
+  files: Record<string, string>,
+  directory = fileURLToPath(new URL("../node_modules/", import.meta.url))
 ): Promise<TestProject> {
-  const tempBase = join(
-    fileURLToPath(new URL("../node_modules/", import.meta.url)),
-    "vitexec-"
-  );
+  const tempBase = join(directory, "vitexec-");
   const root = await mkdtemp(tempBase);
 
   await Promise.all(

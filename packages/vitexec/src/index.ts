@@ -5,9 +5,11 @@ import { fileURLToPath } from "node:url";
 import {
   normalizePath,
   type IndexHtmlTransformContext,
+  type HtmlTagDescriptor,
   type Plugin,
   type ResolvedConfig
 } from "vite";
+import { createInjection } from "./injection.js";
 
 export { keyboard, mouse } from "./input/api.js";
 export type { DurationOptions, HoldOptions, MouseButton } from "./input/api.js";
@@ -49,6 +51,7 @@ type PluginState = {
   config: ResolvedConfig;
   directories: Set<string>;
   pages: Map<string, PageModule>;
+  injection: ReturnType<typeof createInjection>;
 };
 
 const states = new WeakMap<ResolvedConfig, PluginState>();
@@ -217,6 +220,8 @@ async function allPages(state: PluginState): Promise<Map<string, PageModule>> {
 }
 
 async function moduleById(state: PluginState, id: string): Promise<PageModule | undefined> {
+  const registered = state.injection.modules.get(id);
+  if (registered) return inlineModule(registered);
   for (const source of (await allPages(state)).values()) {
     if (source.id === id) return source;
   }
@@ -281,7 +286,8 @@ export function vitexec(options: VitexecPluginOptions = {}): Plugin {
         state = {
           config,
           directories: new Set(),
-          pages: new Map()
+          pages: new Map(),
+          injection: createInjection(basePath(config.base), id => moduleUrl(id, config.base))
         };
         states.set(config, state);
         coordinator = true;
@@ -293,9 +299,9 @@ export function vitexec(options: VitexecPluginOptions = {}): Plugin {
       if (!current) return;
 
       server.middlewares.use(async (request, response, next) => {
-        if (!request.url || (request.method !== "GET" && request.method !== "HEAD")) return next();
-
         try {
+          if (await current.injection.handle(request, response)) return;
+          if (!request.url || (request.method !== "GET" && request.method !== "HEAD")) return next();
           const page = pagePath(request.url, current.config.base);
           if (page === "/" || (!page.endsWith(".html") && !current.pages.has(page))) {
             return next();
@@ -333,7 +339,11 @@ export function vitexec(options: VitexecPluginOptions = {}): Plugin {
       const current = activeState();
       if (!current) return;
 
-      for (const source of (await allPages(current)).values()) {
+      const sources = [
+        ...(await allPages(current)).values(),
+        ...[...current.injection.modules.values()].map(inlineModule)
+      ];
+      for (const source of sources) {
         if (source.kind === "inline" && resolvedModuleId(current.config.root, source) === id) {
           return source.code;
         }
@@ -344,19 +354,18 @@ export function vitexec(options: VitexecPluginOptions = {}): Plugin {
       if (!current || current.config.command !== "serve") return;
 
       const source = (await allPages(current)).get(pagePath(context.path, current.config.base));
-      if (!source) return;
-
-      return {
-        html,
-        tags: [
-          {
-            tag: "script",
-            attrs: { type: "module" },
-            children: runtimeScript(source, current.config.base),
-            injectTo: "head"
-          }
-        ]
-      };
+      const tags: HtmlTagDescriptor[] = [{
+        tag: "meta",
+        attrs: { name: "vitexec", content: current.injection.endpoint },
+        injectTo: "head"
+      }];
+      if (source) tags.push({
+        tag: "script",
+        attrs: { type: "module" },
+        children: runtimeScript(source, current.config.base),
+        injectTo: "head"
+      });
+      return { html, tags };
     },
     async buildStart() {
       const current = activeState();

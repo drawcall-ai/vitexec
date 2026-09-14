@@ -223,33 +223,72 @@ When `--browser-ws-endpoint` is set, vitexec only sends browser-generic
 GPU/WebGPU launch flags. Start the remote Playwright server with any
 host-specific GPU policy that matches its platform.
 
-## Run inside a browser you already have
+## Programmatic execution
 
-By default vitexec launches its own Chromium. When you call it programmatically
-you can instead hand it a Playwright `browser`, `context`, or `page` you already
-own — the snippet runs in **that** browser with no second window. This is ideal
-when a dev server already opens a visible, instrumented tab (e.g. a WebXR
-emulator) and you want to watch the check run live in it.
+Browser creation and execution are separate. `createBrowser()` launches Chromium
+(or connects with `browserWsEndpoint`), with GPU-friendly flags and audio enabled
+by default. Set `gpu: false` or `audio: false` to opt out. The caller owns the browser.
 
 ```ts
-import { runVitexec } from "vitexec/cli";
+import { createBrowser, run } from "vitexec/cli";
 
-// Reuse a page you own. vitexec navigates it to its own per-run URL, runs the
-// snippet, and never closes it — safe to reuse across many sequential runs.
-for await (const line of runVitexec(code, { root, page })) console.log(line);
-
-runVitexec(code, { root, context }); // open a fresh page in this context
-runVitexec(code, { root, browser }); // open a fresh context + page in this browser
+const browser = await createBrowser();
+try {
+  for await (const line of run(browser, "console.log(document.title)", {
+    root: "/path/to/app",
+  })) {
+    console.log(line);
+  }
+} finally {
+  await browser.close();
+}
 ```
 
-vitexec only ever closes handles it created itself: an adopted `page` is left
-open, an adopted `context` keeps its own pages (vitexec closes just the page it
-opened), and an adopted `browser` keeps running (vitexec closes just the context
-it opened). Its own Vite server is always closed. Recording works with an
-adopted page that has a Playwright viewport when Chromium was launched without
-`--mute-audio`. `--network-trace` needs a vitexec-created context, so it is
-skipped for an adopted page or context.
+`run(browser, code, options)` starts a temporary Vite server and opens a fresh
+context and page in the supplied browser. It closes its server and context when
+finished, including on failure or early exit from the log iterator. It never
+creates or closes a browser. Reuse the same browser for subsequent runs, or
+provide one created with Playwright directly.
 
-This is also how you reuse one browser across many runs: connect or launch it
-once yourself and pass it in — vitexec never closes what it did not create. (The
-CLI has no flag for this; adoption is a programmatic-only capability.)
+To execute in an **already running app**, supply its Playwright page:
+
+```ts
+for await (const line of run(page, `
+  import { store } from "/src/store.ts";
+  console.log(store);
+`, { moduleExtension: ".ts" })) {
+  console.log(line);
+}
+```
+
+`run(page, code, options)` preserves the current document: it does not start a
+server, navigate, resize, or close the page. The app must already be served with
+the `vitexec()` Vite plugin configured. After upgrading an existing server, restart
+it and reload the page once to enable injection.
+
+Snippets are served as unique modules through that app's existing Vite server,
+using its transforms and aliases. Imports reuse app state when they resolve to
+the same module URLs; HMR versions or differently optimized imports can refer to
+different instances. Absolute app imports such as `/src/store.ts` are simplest;
+relative imports resolve from the synthetic `.vitexec/code/` module directory.
+The page overload is for Vite development apps, not arbitrary production pages.
+
+Both overloads stream logs and support timeout, screenshot, recording, and
+profiling options. `root`, `configFile`, `path`, `viewport`, `touch`, and
+`networkTracePath` apply only to browser targets. Recording requires a Playwright
+viewport; audio recording requires a browser created with audio enabled. Scripts
+must be at most 1 MiB when registering them in an existing app.
+
+Consume the async generator to start execution. Only one injection may run on a
+page at a time. Timeout or early iterator exit releases vitexec's listeners,
+held input, captures, and script registration, but cannot undo app mutations or
+stop arbitrary JavaScript the snippet has already scheduled. Callers should wait
+for their app to be ready before injecting. Browser and page handles must belong
+to the calling process.
+
+`runVitexec(code, options)` remains available but is deprecated. Its JSDoc contains
+the direct replacement: `run(await createBrowser(), '<code>')`. Retain the browser
+handle and use the `finally` cleanup shown above when you need to close it.
+The compatibility API and CLI retain their existing GPU/audio defaults and their
+existing page/context adoption behavior: a legacy supplied page still navigates
+to a temporary app. The new page overload injects into the current app instead.
