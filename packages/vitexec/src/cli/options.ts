@@ -1,6 +1,7 @@
 import { Command, InvalidArgumentError } from "commander";
 import type { VitexecModuleExtension } from "../index.js";
-import type { RunVitexecOptions } from "../legacy.js";
+import type { AppRunOptions } from "../options.js";
+import type { OpenPageOptions } from "../page.js";
 
 export const VITEXEC_ENV = {
   browserArgs: "VITEXEC_BROWSER_ARGS",
@@ -49,7 +50,7 @@ export function createRunOptions(
     env?: Environment;
     moduleExtension?: VitexecModuleExtension;
   } = {}
-): RunVitexecOptions {
+): AppRunOptions & OpenPageOptions {
   const env = context.env ?? process.env;
   const timeout = options.timeout ?? envNumber(env, VITEXEC_ENV.timeout, parseTimeoutSeconds);
   const browserArgs = normalizeBrowserArgs(
