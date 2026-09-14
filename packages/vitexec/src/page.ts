@@ -21,6 +21,7 @@ export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
       try { await dispose(); } catch (error) { errors.push(error); }
     }
     if (errors.length) throw new AggregateError(errors, "Failed to close the app.");
+    if (context && options.networkTracePath) options.onLog?.(`[network-trace] ${options.networkTracePath}`);
   })();
   try {
     options.signal?.throwIfAborted();

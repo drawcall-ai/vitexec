@@ -40,9 +40,15 @@ async function execute(parts: string[], options: CliOptions, session?: string) {
     await callSession(session, { code: input.code, options: settings }, print);
     return;
   }
-  const page = await openPage({ ...settings, gpu: settings.gpu ?? false, onLog: print });
-  try { await run(page, input.code, { ...settings, onLog: print }); }
+  let hasLogs = false;
+  const onLog = (line: string) => { hasLogs = true; print(line); };
+  const page = await openPage({
+    ...settings, gpu: settings.gpu ?? false,
+    audio: Boolean(settings.recordPath) && settings.recordAudio !== false, onLog
+  });
+  try { await run(page, input.code, { ...settings, onLog }); }
   finally { await page.close(); }
+  if (!hasLogs) print("(no browser logs captured)");
 }
 
 async function main() {

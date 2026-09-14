@@ -1,4 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -155,6 +157,46 @@ describe("session CLI", () => {
     expect(failure.code).toBe(1);
     expect(failure.output).toContain("one shot failed");
   });
+  it("keeps one-shot TypeScript files, flags, logs, and artifacts", async () => {
+    project = await createTempViteProject({
+      "index.html": "<main>wrong page</main>",
+      "inspect.html": '<script>console.log("page boot")</script><main>selected</main>',
+      "vitexec/check.ts": 'const label: string = "script"; console.log(label, document.querySelector("main").textContent, innerWidth);'
+    });
+    const result = await launch([
+      "check.ts", "--path", "/inspect.html", "--viewport", "390x844",
+      "--screenshot", "capture.png", "--network-trace", "network.har"
+    ]).done;
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain("logs:");
+    expect(result.output).toContain("[log] page boot");
+    expect(result.output).toContain("[log] script selected 390");
+    expect(result.output).toContain("[screenshot] capture.png");
+    expect(result.output).toContain("[network-trace] network.har");
+    expect((await stat(join(project.root, "capture.png"))).size).toBeGreaterThan(0);
+    expect(await readFile(join(project.root, "network.har"), "utf8")).toContain("inspect.html");
+  });
+
+  it("keeps one-shot empty output and streams logs before completion", async () => {
+    project = await createTempViteProject({ "index.html": "<main/>" });
+    expect(await launch(["void 0"]).done).toEqual({
+      code: 0, output: "logs:\n(no browser logs captured)\n"
+    });
+    const active = launch(['console.log("first"); await new Promise(r => setTimeout(r, 300)); console.log("last");']);
+    await active.waitFor("[log] first");
+    expect(active.child.exitCode).toBeNull();
+    const result = await active.done;
+    expect(result.code).toBe(0);
+    expect(result.output).toContain("[log] last");
+  });
+
+  it("exits and cleans up when a one-shot script times out", async () => {
+    project = await createTempViteProject({ "index.html": "<main/>" });
+    const result = await launch(["await new Promise(() => {})", "--timeout", "1"]).done;
+    expect(result.code).toBe(1);
+    expect(result.output).toContain("timed out");
+  });
+
   it("provides subcommand help and rejects options for the wrong lifecycle", async () => {
     expect((await launch(["open", "--help"]).done).output).toContain("Usage: vitexec open");
     expect((await launch(["run", "game", "", "--viewport", "100x100"]).done).code).toBe(1);
