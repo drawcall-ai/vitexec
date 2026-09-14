@@ -287,7 +287,8 @@ for their app to be ready before injecting. Browser and page handles must belong
 to the calling process.
 
 `runVitexec(code, options)` remains available but is deprecated. Its JSDoc contains
-a copyable replacement using `createBrowser()`, `run()`, and `finally` cleanup.
+the direct replacement: `run(await createBrowser(), '<code>')`. Retain the browser
+handle and use the `finally` cleanup shown above when you need to close it.
 The compatibility API and CLI retain their existing GPU/audio defaults and their
 existing page/context adoption behavior: a legacy supplied page still navigates
 to a temporary app. The new page overload injects into the current app instead.

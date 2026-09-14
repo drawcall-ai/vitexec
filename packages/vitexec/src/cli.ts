@@ -83,26 +83,8 @@ type CliOptions = {
 };
 
 /**
- * @deprecated Use createBrowser() and run(). Replace a standalone run with:
- * ```ts
- * import { createBrowser, run } from "vitexec/cli";
- *
- * const browser = await createBrowser({
- *   ...options,
- *   gpu: options.gpu ?? false,
- *   audio: Boolean(options.recordPath) && options.recordAudio !== false,
- * });
- * try {
- *   for await (const line of run(browser, code, options)) {
- *     console.log(line);
- *   }
- * } finally {
- *   await browser.close();
- * }
- * ```
- * For an existing browser, use `run(browser, code, options)` directly.
- * Unlike this legacy function, `run(page, code)` injects without navigation
- * and requires the running app's vitexec Vite plugin.
+ * @deprecated Use `run(await createBrowser(), '<code>')` instead of `runVitexec('<code>')`.
+ * The browser stays open; keep its handle if you need to close it afterward.
  */
 export async function* runVitexec(
   code: string,
