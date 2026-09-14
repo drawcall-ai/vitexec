@@ -234,11 +234,10 @@ import { createBrowser, run } from "vitexec/cli";
 
 const browser = await createBrowser();
 try {
-  for await (const line of run(browser, "console.log(document.title)", {
+  await run(browser, "console.log(document.title)", {
     root: "/path/to/app",
-  })) {
-    console.log(line);
-  }
+    onLog: console.log,
+  });
 } finally {
   await browser.close();
 }
@@ -246,25 +245,41 @@ try {
 
 `run(browser, code, options)` starts a temporary Vite server and opens a fresh
 context and page in the supplied browser. It closes its server and context when
-finished, including on failure or early exit from the log iterator. It never
-creates or closes a browser. Reuse the same browser for subsequent runs, or
+finished, including on failure. It never creates or closes a browser. Reuse the same browser for subsequent runs, or
 provide one created with Playwright directly.
 
 To execute in an **already running app**, supply its Playwright page:
 
 ```ts
-for await (const line of run(page, `
+await run(page, `
   import { store } from "/src/store.ts";
   console.log(store);
-`, { moduleExtension: ".ts" })) {
-  console.log(line);
-}
+`, { moduleExtension: ".ts", onLog: console.log });
 ```
 
 `run(page, code, options)` preserves the current document: it does not start a
 server, navigate, resize, or close the page. The app must already be served with
 the `vitexec()` Vite plugin configured. After upgrading an existing server, restart
 it and reload the page once to enable injection.
+
+To start an app yourself, `createServer` loads its Vite config, enables injection,
+and returns a listening server. No separate `listen()` is needed:
+
+```ts
+import { createServer } from "vitexec/cli";
+
+const server = await createServer({ root: "/path/to/app" });
+try {
+  await page.goto(server.url);
+  await run(page, firstLevel);
+  await run(page, secondLevel);
+  await run(page, thirdLevel);
+} finally {
+  await server.close();
+}
+```
+
+It accepts `root` and `configFile`. The caller owns the server.
 
 Snippets are served as unique modules through that app's existing Vite server,
 using its transforms and aliases. Imports reuse app state when they resolve to
@@ -273,15 +288,17 @@ different instances. Absolute app imports such as `/src/store.ts` are simplest;
 relative imports resolve from the synthetic `.vitexec/code/` module directory.
 The page overload is for Vite development apps, not arbitrary production pages.
 
-Both overloads stream logs and support timeout, screenshot, recording, and
+Both overloads return a promise that resolves after execution and cleanup. Use
+`onLog` to receive log lines; logs are discarded when omitted. Script errors and
+timeouts are reported through these logs; infrastructure and callback errors
+reject the promise. Both overloads support timeout, screenshot, recording, and
 profiling options. `root`, `configFile`, `path`, `viewport`, `touch`, and
 `networkTracePath` apply only to browser targets. Recording requires a Playwright
 viewport; audio recording requires a browser created with audio enabled. Scripts
 must be at most 1 MiB when registering them in an existing app.
 
-Consume the async generator to start execution. Only one injection may run on a
-page at a time. Timeout or early iterator exit releases vitexec's listeners,
-held input, captures, and script registration, but cannot undo app mutations or
+Only one injection may run on a page at a time. Timeout or a throwing log callback
+releases vitexec's listeners, held input, captures, and script registration, but cannot undo app mutations or
 stop arbitrary JavaScript the snippet has already scheduled. Callers should wait
 for their app to be ready before injecting. Browser and page handles must belong
 to the calling process.
@@ -289,6 +306,9 @@ to the calling process.
 `runVitexec(code, options)` remains available but is deprecated. Its JSDoc contains
 the direct replacement: `run(await createBrowser(), '<code>')`. Retain the browser
 handle and use the `finally` cleanup shown above when you need to close it.
-The compatibility API and CLI retain their existing GPU/audio defaults and their
-existing page/context adoption behavior: a legacy supplied page still navigates
-to a temporary app. The new page overload injects into the current app instead.
+The compatibility API still returns an async generator. It and the CLI retain
+their existing GPU/audio defaults and page/context adoption behavior: a legacy
+supplied page still navigates to a temporary app. The new page overload injects into the current app instead.
+
+See the [three-level game example](./examples/level-injection) for separate keyboard,
+clicking, and dragging scripts injected sequentially into one running page.

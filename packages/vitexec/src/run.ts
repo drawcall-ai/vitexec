@@ -14,6 +14,8 @@ import { capture, saveScreenshot } from "./artifacts.js";
 export const VITEXEC_TIMEOUT_MS = 10 * 60 * 1000;
 
 export type PageRunOptions = {
+  /** Receive each log line as it arrives. Logs are discarded when omitted. */
+  onLog?: (line: string) => void;
   cpuProfilePath?: string;
   heapSnapshotPath?: string;
   moduleExtension?: VitexecModuleExtension;
@@ -39,10 +41,18 @@ export type AppRunOptions = PageRunOptions & {
 };
 
 /** Run in a fresh app context. The supplied browser is never closed. */
-export function run(browser: Browser, code: string, options?: AppRunOptions): AsyncGenerator<string>;
+export function run(browser: Browser, code: string, options?: AppRunOptions): Promise<void>;
 /** Inject into the current document using its vitexec Vite plugin. Never navigates or closes the page. */
-export function run(page: Page, code: string, options?: PageRunOptions): AsyncGenerator<string>;
-export async function* run(
+export function run(page: Page, code: string, options?: PageRunOptions): Promise<void>;
+export async function run(
+  target: Browser | Page,
+  code: string,
+  options: AppRunOptions = {}
+): Promise<void> {
+  for await (const line of stream(target, code, options)) options.onLog?.(line);
+}
+
+export async function* stream(
   target: Browser | Page,
   code: string,
   options: AppRunOptions = {}

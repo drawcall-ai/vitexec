@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Three little challenges</title>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Three little challenges.</h1>
+        <p>One game. Three ways to play.</p>
+      </header>
+      <ol id="progress" aria-label="Levels">
+        <li aria-current="step">1. Walk</li><li>2. Aim</li><li>3. Deliver</li>
+      </ol>
+      <section id="game" tabindex="0" aria-label="Game board">
+        <h2 id="title">Walk around the wall.</h2>
+        <p id="hint">Use the arrow keys to reach the green exit.</p>
+        <div class="board" id="walk">
+          <div class="wall" style="grid-area: 2 / 3" aria-label="Wall"></div>
+          <div class="exit" style="grid-area: 2 / 5">EXIT</div>
+          <div id="player" style="grid-area: 2 / 1" aria-label="Player"></div>
+        </div>
+        <div class="board" id="aim" hidden>
+          <button data-target="1" style="grid-area: 1 / 2">1</button>
+          <button data-target="2" style="grid-area: 3 / 4">2</button>
+          <button data-target="3" style="grid-area: 1 / 5">3</button>
+        </div>
+        <div class="board" id="deliver" hidden>
+          <div id="dock" style="grid-area: 2 / 5">DROP<br />HERE</div>
+          <div id="parcel" style="grid-area: 2 / 1" aria-label="Parcel to drag">BOX</div>
+        </div>
+        <div class="board won" id="won" hidden><p>All three complete!</p></div>
+      </section>
+      <nav id="arrows" aria-label="Movement">
+        <button data-key="ArrowLeft" aria-label="Move left">Left</button>
+        <button data-key="ArrowUp" aria-label="Move up">Up</button>
+        <button data-key="ArrowDown" aria-label="Move down">Down</button>
+        <button data-key="ArrowRight" aria-label="Move right">Right</button>
+      </nav>
+      <footer>
+        <p id="score" aria-live="polite">0 moves · 0 targets · 0 deliveries</p>
+        <button id="restart">Play again</button>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

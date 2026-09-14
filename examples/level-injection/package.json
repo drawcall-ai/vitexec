@@ -1,0 +1,17 @@
+{
+  "name": "level-injection",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "play": "node play.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vitexec": "workspace:*",
+    "vite": "^8.0.10"
+  }
+}
