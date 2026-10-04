@@ -27,6 +27,10 @@ Install the agent skill:
 npx skills add drawcall-ai/vitexec
 ```
 
+The skill also ships inside the `vitexec` npm package at
+`skills/vitexec/SKILL.md`, so [skills-npm](https://github.com/antfu/skills-npm)
+links it automatically from `node_modules`, at the version you have installed.
+
 Then ask your agent to use it:
 
 ```txt
