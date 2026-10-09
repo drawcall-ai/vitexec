@@ -188,6 +188,7 @@ same path under `./vitexec`, and otherwise treats it as inline code. Thus
 | `--path /scene` | Open a specific route |
 | `--config ./vite.config.ts` | Use a specific Vite config |
 | `--headed` | Show the browser window (headless by default); available for one-shot execution and `open` |
+| `--audio-output` / `--no-audio-output` | Play or silence (default) page audio through the host speakers; recording is unaffected |
 | `--no-gpu` | Disable GPU hardware acceleration (enabled by default) |
 | `--browser-ws-endpoint wss://...` | Connect to a Playwright browser WebSocket endpoint |
 | `--browser-expose-network <loopback>` | Expose local network routes to a remote browser |
@@ -212,6 +213,7 @@ CLI flags take precedence over environment variables.
 | `VITEXEC_BROWSER_EXPOSE_NETWORK` | `--browser-expose-network` |
 | `VITEXEC_CONFIG` | `--config` |
 | `VITEXEC_PATH` | `--path` |
+| `VITEXEC_AUDIO_OUTPUT` | `--audio-output` / `--no-audio-output` |
 | `VITEXEC_GPU` | Set `false` to disable GPU acceleration; `--no-gpu` takes precedence |
 | `VITEXEC_TIMEOUT` | `--timeout` |
 | `VITEXEC_SCREENSHOT` | `--screenshot` |
@@ -279,7 +281,11 @@ try {
 
 `openPage()` creates its server, browser, context, and page. It accepts configuration,
 not borrowed resource handles. GPU-friendly flags and audio are enabled by default;
-use `gpu: false` or `audio: false` to disable them. The CLI uses the same GPU default;
+use `gpu: false` or `audio: false` to disable them. Page audio is recorded without
+playing through the host speakers by default. Set `audioOutput: true` on `openPage()`
+or `openBrowser()` to hear it, or use `--audio-output` on the CLI. For an existing
+remote browser, audio output must be configured when that browser launches.
+The CLI uses the same GPU default;
 `--no-gpu` explicitly disables hardware acceleration.
 
 For explicit ownership, `openServer({ root, configFile })` returns a listening Vite
@@ -330,6 +336,14 @@ an action produces unexpected app behavior. CDP attribution requires Chromium.
 await their work. Script exceptions, callback failures, and timeouts reject the
 promise and make the CLI exit nonzero. Timeout stops waiting, not arbitrary browser
 JavaScript: after a timeout, close and reopen the page before another run.
+After successful execution, cleanup can use the remaining execution budget, with
+a minimum 60-second grace period for finishing captures, releasing input, and
+disposing the injected script. Failed or timed-out execution gets 60 seconds for
+cleanup. A cleanup failure also requires reopening the page. `page.close()` bounds
+context, browser, and Vite shutdown separately and attempts each even if an earlier
+step fails. CLI and session errors include
+underlying capture and shutdown failures; programmatic callers receive the
+original error or an `AggregateError` when multiple operations fail.
 
 Pass `headless: false` to `openPage` or `openBrowser` to show the browser window.
 The default is `true`; `run` uses the supplied page’s existing visibility.

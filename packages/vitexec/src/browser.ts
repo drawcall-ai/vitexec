@@ -3,6 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import spawn from "nano-spawn";
 import type { Browser } from "playwright";
+import { validateRunOptions, VITEXEC_TIMEOUT_MS } from "./options.js";
 
 export type OpenBrowserOptions = {
   /** Hide the browser window. Defaults to true. */
@@ -14,6 +15,10 @@ export type OpenBrowserOptions = {
   gpu?: boolean;
   /** Enable page audio, including audio recordings. Defaults to true. */
   audio?: boolean;
+  /** Play page audio through the host speakers. Defaults to false; recording is unaffected. */
+  audioOutput?: boolean;
+  /** Maximum browser launch or connection time in milliseconds. */
+  timeoutMs?: number;
   /** Let Playwright handle process signals. Disable when the caller owns shutdown. */
   handleSignals?: boolean;
   log?: (line: string) => void;
@@ -31,11 +36,14 @@ export const VITEXEC_REMOTE_GPU_BROWSER_ARGS = [
 
 /** Create or connect to Chromium. The caller closes the returned browser. */
 export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Browser> {
+  validateRunOptions(options);
   const { chromium } = await import("playwright");
+  const timeout = options.timeoutMs ?? VITEXEC_TIMEOUT_MS;
   const args = createBrowserArgs(options);
   const launchOptions = {
     headless: options.headless ?? true,
     args,
+    timeout,
     handleSIGINT: options.handleSignals,
     handleSIGTERM: options.handleSignals,
     handleSIGHUP: options.handleSignals,
@@ -43,6 +51,7 @@ export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Bro
   };
   if (options.browserWsEndpoint) {
     return chromium.connect(options.browserWsEndpoint, {
+      timeout,
       exposeNetwork: options.browserExposeNetwork ?? VITEXEC_DEFAULT_REMOTE_EXPOSE_NETWORK,
       headers: { "x-playwright-launch-options": JSON.stringify(launchOptions) }
     });
@@ -52,14 +61,14 @@ export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Bro
 }
 
 export function createRemoteBrowserHeaders(
-  options: Pick<OpenBrowserOptions, "browserArgs" | "gpu"> & { recordAudio?: boolean; recordPath?: string }
+  options: Pick<OpenBrowserOptions, "browserArgs" | "gpu" | "audioOutput"> & { recordAudio?: boolean; recordPath?: string }
 ): Record<string, string> {
   const args = createBrowserArgs(options);
 
   return {
     "x-playwright-launch-options": JSON.stringify({
       args,
-      ...(recordsAudio(options) ? { ignoreDefaultArgs: ["--mute-audio"] } : {})
+      ...(options.audioOutput || recordsAudio(options) ? { ignoreDefaultArgs: ["--mute-audio"] } : {})
     })
   };
 }
@@ -69,10 +78,11 @@ function recordsAudio(options: { recordAudio?: boolean; recordPath?: string }): 
 }
 
 export function createBrowserArgs(
-  options: Pick<OpenBrowserOptions, "browserArgs" | "gpu">
+  options: Pick<OpenBrowserOptions, "browserArgs" | "gpu" | "audioOutput">
 ): string[] {
   return [
     ...(options.gpu === false ? ["--disable-gpu"] : VITEXEC_LOCAL_GPU_BROWSER_ARGS),
+    ...(options.audioOutput === true ? [] : ["--disable-audio-output"]),
     ...(options.browserArgs ?? [])
   ];
 }

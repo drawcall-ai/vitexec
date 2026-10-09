@@ -1,4 +1,4 @@
-import type { CDPSession } from "playwright";
+import type { Cdp } from "./cdp.js";
 import { writeJson } from "./files.js";
 
 type DecodedHeapSnapshot = {
@@ -51,7 +51,7 @@ type HeapNodeSummary = {
   selfSize: number;
 };
 
-export async function saveHeapSnapshotSummary(cdp: CDPSession, path: string): Promise<void> {
+export async function saveHeapSnapshotSummary(cdp: Cdp, path: string): Promise<void> {
   const chunks: string[] = [];
   const collectChunk = (event: unknown) => {
     if (isHeapSnapshotChunkEvent(event)) chunks.push(event.chunk);

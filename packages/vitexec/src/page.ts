@@ -4,6 +4,7 @@ import { openBrowser, type OpenBrowserOptions } from "./browser.js";
 import { validateRunOptions, parseViewport, VITEXEC_TIMEOUT_MS, type AppRunOptions } from "./options.js";
 import { ensureParentDir } from "./files.js";
 import { preparePage } from "./run.js";
+import { BROWSER_SHUTDOWN_TIMEOUT_MS, SHUTDOWN_TIMEOUT_MS, within } from "./timeout.js";
 
 export type OpenPageOptions = Pick<AppRunOptions, "root" | "configFile" | "path" | "viewport" | "touch" | "networkTracePath" | "timeoutMs" | "onLog"> & Omit<OpenBrowserOptions, "log" | "handleSignals"> & { signal?: AbortSignal };
 
@@ -17,8 +18,14 @@ export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => {
     const errors: unknown[] = [];
-    for (const dispose of [() => context?.close(), () => browser?.close(), () => server.close()]) {
-      try { await dispose(); } catch (error) { errors.push(error); }
+    for (const [name, dispose, timeout] of [
+      ["Browser context", () => context?.close(), SHUTDOWN_TIMEOUT_MS],
+      ["Browser", () => browser?.close(), BROWSER_SHUTDOWN_TIMEOUT_MS],
+      ["Vite server", () => server.close(), SHUTDOWN_TIMEOUT_MS]
+    ] as const) {
+      try {
+        await within(Promise.resolve(dispose()), timeout, `${name} shutdown timed out after ${timeout}ms.`);
+      } catch (error) { errors.push(error); }
     }
     if (errors.length) throw new AggregateError(errors, "Failed to close the app.");
     if (context && options.networkTracePath) options.onLog?.(`[network-trace] ${options.networkTracePath}`);
@@ -36,7 +43,8 @@ export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
     });
     const page = await context.newPage();
     // Bindings must exist before callers can race execution against page shutdown.
-    const { collector } = await preparePage(page);
+    const timeout = options.timeoutMs ?? VITEXEC_TIMEOUT_MS;
+    const { collector } = await within(preparePage(page), timeout, `Vitexec page preparation timed out after ${timeout}ms.`);
     collector.setPageLog(options.onLog ?? (() => {}));
     page.close = close;
     options.signal?.throwIfAborted();
@@ -57,10 +65,12 @@ export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
         options.signal?.throwIfAborted();
         return page;
       })();
-      return await Promise.race([navigation, aborted]);
+      return await within(Promise.race([navigation, aborted]), timeout, `Vitexec navigation timed out after ${timeout}ms.`);
     } finally { options.signal?.removeEventListener("abort", abort); }
   } catch (error) {
-    await close();
+    try { await close(); } catch (shutdownError) {
+      throw new AggregateError([error, shutdownError], "Vitexec startup and shutdown failed.");
+    }
     throw error;
   }
 }
