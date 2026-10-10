@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import { openPage } from "./page.js";
+import { formatError, withCleanup } from "./errors.js";
 import { run } from "./run.js";
 import { callSession, openSession } from "./session.js";
 import { addOptions, createRunOptions, type CliOptions } from "./cli/options.js";
@@ -42,12 +43,12 @@ async function execute(parts: string[], options: CliOptions, session?: string) {
   }
   let hasLogs = false;
   const onLog = (line: string) => { hasLogs = true; print(line); };
-  const page = await openPage({
-    ...settings,
-    audio: Boolean(settings.recordPath) && settings.recordAudio !== false, onLog
-  });
-  try { await run(page, input.code, { ...settings, onLog }); }
-  finally { await page.close(); }
+  const page = await openPage({ ...settings, onLog });
+  await withCleanup(
+    () => run(page, input.code, { ...settings, onLog }),
+    () => page.close(),
+    "Vitexec execution and page shutdown failed."
+  );
   if (!hasLogs) print("(no browser logs captured)");
 }
 
@@ -70,7 +71,7 @@ async function main() {
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   void main().catch(error => {
-    console.error(`vitexec failed: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`vitexec failed: ${formatError(error)}`);
     process.exitCode = 1;
   });
 }

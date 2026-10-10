@@ -1,4 +1,5 @@
-import type { Page, CDPSession } from "playwright";
+import type { CDPSession, Page } from "playwright";
+import { withCleanup } from "./errors.js";
 
 type Stack = { callFrames: { url: string }[]; parent?: Stack; parentId?: { id: string; debuggerId?: string } };
 type Value = { type: string; value?: unknown; unserializableValue?: string; description?: string; objectId?: string };
@@ -78,8 +79,7 @@ async function collect(page: Page) {
     await cdp.send("Debugger.enable");
     await cdp.send("Debugger.setAsyncCallStackDepth", { maxDepth: 32 });
   } catch (error) {
-    await cdp.detach();
-    throw error;
+    return withCleanup(async () => { throw error; }, () => cdp.detach(), "Failed to initialize Vitexec logs and detach CDP.");
   }
   return {
     owner,

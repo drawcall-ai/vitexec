@@ -4,6 +4,7 @@ import type { AppRunOptions } from "../options.js";
 import type { OpenPageOptions } from "../page.js";
 
 export const VITEXEC_ENV = {
+  audioOutput: "VITEXEC_AUDIO_OUTPUT",
   browserArgs: "VITEXEC_BROWSER_ARGS",
   browserExposeNetwork: "VITEXEC_BROWSER_EXPOSE_NETWORK",
   browserWsEndpoint: "VITEXEC_BROWSER_WS_ENDPOINT",
@@ -25,6 +26,7 @@ export const VITEXEC_ENV = {
 type Environment = Record<string, string | undefined>;
 
 export type CliOptions = {
+  audioOutput?: boolean;
   headed?: boolean;
   browserArg?: string[];
   browserExposeNetwork?: string;
@@ -60,6 +62,7 @@ export function createRunOptions(
   );
 
   return {
+    audioOutput: options.audioOutput ?? envBoolean(env, VITEXEC_ENV.audioOutput),
     headless: options.headed ? false : undefined,
     ...(browserArgs ? { browserArgs } : {}),
     browserExposeNetwork: options.browserExposeNetwork ?? envString(env, VITEXEC_ENV.browserExposeNetwork),
@@ -170,6 +173,8 @@ export function addOptions(command: Command, scope: "open" | "run" | "once"): Co
       .option("--browser-ws-endpoint <url>", "remote Playwright browser endpoint")
       .option("--config <path>", "Vite config file")
       .option("--headed", "show the browser window")
+      .option("--audio-output", "play page audio through the host speakers (silent by default)")
+      .option("--no-audio-output", "silence speakers without disabling audio recording")
       .option("--no-gpu", "disable GPU hardware acceleration")
       // Leave the default to browser creation so VITEXEC_GPU can still apply.
       .setOptionValue("gpu", undefined)

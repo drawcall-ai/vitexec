@@ -76,6 +76,17 @@ describe("session CLI", () => {
     expect((await launch(["run", "game", 'console.log("recovered")']).done).code).toBe(0);
   });
 
+  it.each(["once", "session"])("shows nested capture failures in %s output", async mode => {
+    project = await createTempViteProject({ "index.html": "<main/>" });
+    if (mode === "session") owner = launch(["open", "game"]);
+    const prefix = mode === "session" ? ["run", "game"] : [];
+    const result = await launch([...prefix, "void 0", "--cpu-profile", "index.html/profile.json"]).done;
+    expect(result.code).toBe(1);
+    expect(result.output).toContain("Failed to finish Vitexec captures.");
+    expect(result.output).toContain("EEXIST");
+    expect(result.output).toContain("index.html");
+  });
+
   it.each(["SIGINT", "SIGTERM"] as const)("interrupts active runs on %s", async signal => {
     const owner = await open();
     const active = launch(["run", "game", 'console.log("running"); await new Promise(() => {});']);

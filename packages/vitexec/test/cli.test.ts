@@ -800,7 +800,7 @@ describe("vitexec CLI runner", () => {
   });
 
   it("sends generic GPU launch options to remote Playwright browser servers", () => {
-    expect(JSON.parse(createRemoteBrowserHeaders({ gpu: false })["x-playwright-launch-options"])).toEqual({ args: ["--disable-gpu"] });
+    expect(JSON.parse(createRemoteBrowserHeaders({ gpu: false })["x-playwright-launch-options"])).toEqual({ args: ["--disable-gpu", "--disable-audio-output"] });
 
     const headers = createRemoteBrowserHeaders({ gpu: true });
     const launchOptions = JSON.parse(
@@ -808,7 +808,7 @@ describe("vitexec CLI runner", () => {
     );
 
     expect(launchOptions).toEqual({
-      args: VITEXEC_REMOTE_GPU_BROWSER_ARGS
+      args: [...VITEXEC_REMOTE_GPU_BROWSER_ARGS, "--disable-audio-output"]
     });
     expect(launchOptions.args).not.toContain("--use-angle=vulkan");
     expect(launchOptions.args).not.toContain("--enable-features=Vulkan");
@@ -820,7 +820,7 @@ describe("vitexec CLI runner", () => {
       headers?.["x-playwright-launch-options"] ?? "null"
     );
 
-    expect(launchOptions).toEqual({ args: VITEXEC_REMOTE_GPU_BROWSER_ARGS, ignoreDefaultArgs: ["--mute-audio"] });
+    expect(launchOptions).toEqual({ args: [...VITEXEC_REMOTE_GPU_BROWSER_ARGS, "--disable-audio-output"], ignoreDefaultArgs: ["--mute-audio"] });
   });
 
   it("keeps remote Chromium muted for video-only recordings", () => {
@@ -829,7 +829,7 @@ describe("vitexec CLI runner", () => {
       recordPath: "recording.mp4"
     });
 
-    expect(JSON.parse(headers["x-playwright-launch-options"])).toEqual({ args: VITEXEC_REMOTE_GPU_BROWSER_ARGS });
+    expect(JSON.parse(headers["x-playwright-launch-options"])).toEqual({ args: [...VITEXEC_REMOTE_GPU_BROWSER_ARGS, "--disable-audio-output"] });
   });
 
   it("can add custom browser launch args locally and remotely", () => {
@@ -841,6 +841,7 @@ describe("vitexec CLI runner", () => {
 
     expect(createBrowserArgs({ gpu: true, browserArgs })).toEqual([
       ...VITEXEC_REMOTE_GPU_BROWSER_ARGS,
+      "--disable-audio-output",
       ...browserArgs
     ]);
 
@@ -850,7 +851,7 @@ describe("vitexec CLI runner", () => {
     );
 
     expect(launchOptions).toEqual({
-      args: [...VITEXEC_REMOTE_GPU_BROWSER_ARGS, ...browserArgs]
+      args: [...VITEXEC_REMOTE_GPU_BROWSER_ARGS, "--disable-audio-output", ...browserArgs]
     });
   });
 

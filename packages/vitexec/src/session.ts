@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
+import { formatError } from "./errors.js";
+import { CLEANUP_GRACE_MS, SHUTDOWN_TIMEOUT_MS, within } from "./timeout.js";
 import { validateRunOptions, VITEXEC_TIMEOUT_MS } from "./options.js";
 import { openPage, type OpenPageOptions } from "./page.js";
 import { run, type PageRunOptions } from "./run.js";
@@ -61,7 +63,7 @@ export async function openSession(name: string, options: OpenPageOptions): Promi
   let stop: () => void = () => {};
   const stopped = new Promise<void>(resolve => { stop = resolve; });
   let closing = false;
-  let closeError: unknown;
+  const errors: unknown[] = [];
   const server = createServer(socket => {
     sockets.add(socket);
     socket.on("close", () => sockets.delete(socket));
@@ -72,13 +74,13 @@ export async function openSession(name: string, options: OpenPageOptions): Promi
       void (async () => {
         const message = request(JSON.parse(line));
         const deadline = Date.now() + (message.options.timeoutMs ?? VITEXEC_TIMEOUT_MS);
-        const ready = await within(startup, deadline);
+        const ready = await within(startup, remaining(deadline), "Session run timed out.");
         if (closing || socket.destroyed) throw new Error("Session is closing or client disconnected.");
         await run(ready, message.code, { ...message.options, timeoutMs: remaining(deadline), onLog: line => send(socket, { log: line }) });
         send(socket, { done: true });
         socket.end();
       })().catch(error => {
-        send(socket, { error: error instanceof Error ? error.message : String(error) });
+        send(socket, { error: formatError(error) });
         socket.end();
       });
     });
@@ -100,23 +102,29 @@ export async function openSession(name: string, options: OpenPageOptions): Promi
     page.on("close", stop);
     await stopped;
   } catch (error) {
-    for (const socket of sockets) send(socket, { error: error instanceof Error ? error.message : String(error) });
-    if (!controller.signal.aborted || error !== controller.signal.reason) throw error;
+    for (const socket of sockets) send(socket, { error: formatError(error) });
+    if (!controller.signal.aborted || error !== controller.signal.reason) errors.push(error);
   } finally {
     closing = true;
     process.off("SIGINT", signal);
     process.off("SIGTERM", signal);
-    try { await page?.close(); } catch (error) { closeError = error; }
+    try { await page?.close(); } catch (error) { errors.push(error); }
+    for (const socket of sockets) {
+      send(socket, { error: errors.length ? formatError(new AggregateError(errors, "Session stopped with errors.")) : "Session stopped; execution interrupted." });
+      socket.end();
+    }
     try {
-      for (const socket of sockets) {
-        send(socket, closeError ? { error: String(closeError) } : { error: "Session stopped; execution interrupted." });
-        socket.end();
+      await within(new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())),
+        SHUTDOWN_TIMEOUT_MS, "Session server shutdown timed out.");
+    } catch (error) { errors.push(error); }
+    finally { for (const socket of sockets) socket.destroy(); }
+    if (process.platform !== "win32") {
+      try { await unlink(path); } catch (error) {
+        if (!hasCode(error, "ENOENT")) errors.push(error);
       }
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-      if (process.platform !== "win32") await unlink(path).catch((error: unknown) => {
-        if (!hasCode(error, "ENOENT")) throw error;
-      });
-    } finally { if (closeError) throw closeError; }
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Session failed and could not shut down cleanly.");
   }
 }
 
@@ -125,26 +133,30 @@ export async function callSession(name: string, message: Request, log: (line: st
   validateRunOptions(message.options);
   const deadline = Date.now() + (message.options.timeoutMs ?? VITEXEC_TIMEOUT_MS);
   const socket = await connectSession(path, Math.min(deadline, Date.now() + 1000));
-  await within(new Promise<void>((resolve, reject) => {
-    let finished = false;
-    socket.on("error", reject);
-    socket.on("close", () => { if (!finished) reject(new Error(`Session ${name} disconnected before execution completed.`)); });
-    const lines = createInterface({ input: socket });
-    lines.on("error", reject);
-    lines.on("line", line => {
-      try {
-        const value: unknown = JSON.parse(line);
-        if (typeof value !== "object" || value === null) throw new Error("Invalid session response.");
-        if ("log" in value && typeof value.log === "string") { log(value.log); return; }
-        if ("error" in value && typeof value.error === "string") throw new Error(value.error);
-        if ("done" in value && value.done === true) {
-          finished = true; resolve(); return;
-        }
-        throw new Error("Invalid session response.");
-      } catch (error) { finished = true; reject(error); }
-    });
-    send(socket, { ...message, options: { ...message.options, timeoutMs: remaining(deadline) } });
-  }), deadline).finally(() => socket.destroy());
+  // Allow cleanup to finish and its error to reach the client after execution times out.
+  try {
+    const timeout = remaining(deadline + CLEANUP_GRACE_MS + 1000);
+    await within(new Promise<void>((resolve, reject) => {
+      let finished = false;
+      socket.on("error", reject);
+      socket.on("close", () => { if (!finished) reject(new Error(`Session ${name} disconnected before execution completed.`)); });
+      const lines = createInterface({ input: socket });
+      lines.on("error", reject);
+      lines.on("line", line => {
+        try {
+          const value: unknown = JSON.parse(line);
+          if (typeof value !== "object" || value === null) throw new Error("Invalid session response.");
+          if ("log" in value && typeof value.log === "string") { log(value.log); return; }
+          if ("error" in value && typeof value.error === "string") throw new Error(value.error);
+          if ("done" in value && value.done === true) {
+            finished = true; resolve(); return;
+          }
+          throw new Error("Invalid session response.");
+        } catch (error) { finished = true; reject(error); }
+      });
+      send(socket, { ...message, options: { ...message.options, timeoutMs: remaining(deadline) } });
+    }), timeout, "Session run timed out.");
+  } finally { socket.destroy(); }
 }
 
 async function connectSession(path: string, deadline: number): Promise<Socket> {
@@ -166,15 +178,6 @@ function remaining(deadline: number): number {
   const ms = deadline - Date.now();
   if (ms <= 0) throw new Error("Session run timed out.");
   return ms;
-}
-
-async function within<T>(promise: Promise<T>, deadline: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([promise, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error("Session run timed out.")), remaining(deadline));
-    })]);
-  } finally { clearTimeout(timer); }
 }
 
 function hasCode(error: unknown, code: string): boolean {
