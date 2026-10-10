@@ -1,5 +1,5 @@
-import type { Page } from "playwright";
-import { openCdp, type Cdp } from "./cdp.js";
+import type { CDPSession, Page } from "playwright";
+import { withCleanup } from "./errors.js";
 
 type Stack = { callFrames: { url: string }[]; parent?: Stack; parentId?: { id: string; debuggerId?: string } };
 type Value = { type: string; value?: unknown; unserializableValue?: string; description?: string; objectId?: string };
@@ -20,7 +20,7 @@ export function logs(page: Page): Promise<Collector> {
 }
 
 async function collect(page: Page) {
-  const cdp = await openCdp(page);
+  const cdp = await page.context().newCDPSession(page);
   const runs = new Map<string, Listener>();
   const known = new Set<string>();
   let pageLog: (line: string) => void = () => {};
@@ -79,10 +79,7 @@ async function collect(page: Page) {
     await cdp.send("Debugger.enable");
     await cdp.send("Debugger.setAsyncCallStackDepth", { maxDepth: 32 });
   } catch (error) {
-    try { await cdp.detach(); } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "Failed to initialize Vitexec logs and detach CDP.");
-    }
-    throw error;
+    return withCleanup(async () => { throw error; }, () => cdp.detach(), "Failed to initialize Vitexec logs and detach CDP.");
   }
   return {
     owner,
@@ -101,7 +98,7 @@ async function collect(page: Page) {
   };
 }
 
-async function format(cdp: Cdp, value: Value): Promise<string> {
+async function format(cdp: CDPSession, value: Value): Promise<string> {
   if (value.type === "string") return String(value.value);
   if (value.value !== undefined) return JSON.stringify(value.value);
   if (!value.objectId) return value.unserializableValue ?? value.description ?? value.type;

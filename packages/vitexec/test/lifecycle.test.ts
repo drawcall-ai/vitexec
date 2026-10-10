@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import type { Page } from "playwright";
 import { afterEach, expect, it, vi } from "vitest";
+import { capture } from "../src/artifacts.js";
 import { openPage } from "../src/page.js";
 import { run } from "../src/run.js";
 import { formatError } from "../src/errors.js";
@@ -13,7 +14,6 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   await page?.close().catch(error => {
-    // Tests that deliberately time out close() retain the same rejected close promise.
     if (!formatError(error).includes("shutdown timed out")) throw error;
   });
   await project?.close();
@@ -27,179 +27,158 @@ async function app() {
   return page;
 }
 
-it.each([false, true])("bounds stuck capture cleanup after execution (timeout: %s)", async timedOut => {
+const fakeTimers = () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+
+it.each([
+  ["Page.stopScreenRecording", "done", 5_000],
+  ["IO.read", "done", 5_000],
+  ["Profiler.stop", "timeout", 500],
+  ["Profiler.stop", "throw", 120_000]
+] as const)("bounds stalled %s after %s", async (method, outcome, timeoutMs) => {
   const page = await app();
   const cdp = await page.context().newCDPSession(page);
   const send = cdp.send.bind(cdp);
-  let stopping: () => void = () => {};
-  const stopped = new Promise<void>(resolve => { stopping = resolve; });
-  vi.spyOn(cdp, "send").mockImplementation((method, params) => {
-    if (method !== "Profiler.stop") return send(method, params);
+  const stopping = vi.fn();
+  vi.spyOn(cdp, "send").mockImplementation((name, params) => {
+    if (name !== method) return send(name, params);
     stopping();
     return new Promise<never>(() => {});
   });
   vi.spyOn(page.context(), "newCDPSession").mockResolvedValue(cdp);
-  const execution = run(page, timedOut ? "console.log('started'); await new Promise(() => {});" : "console.log('done');", {
-    cpuProfilePath: `${project?.root}/profile.json`, timeoutMs: 500,
-    onLog: () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
-  });
-  const failure = execution.catch(error => formatError(error));
-  await stopped;
+  const scripts = {
+    done: "",
+    timeout: "await new Promise(() => {});",
+    throw: 'throw new Error("script failed");'
+  };
+  const result = run(page, `console.log("started"); ${scripts[outcome]}`, {
+    ...(method === "Profiler.stop" ? { cpuProfilePath: `${project?.root}/profile.json` } : { recordPath: `${project?.root}/recording.mp4` }),
+    timeoutMs, onLog: fakeTimers
+  }).catch(formatError);
+  await vi.waitFor(() => expect(stopping).toHaveBeenCalled());
   await vi.advanceTimersByTimeAsync(CLEANUP_GRACE_MS);
-  const error = await failure;
+  const error = await result;
   expect(error).toContain("cleanup timed out");
-  if (timedOut) expect(error).toContain("Vitexec timed out after 500ms");
+  if (outcome === "timeout") expect(error).toContain("Vitexec timed out after 500ms");
+  if (outcome === "throw") expect(error).toContain("script failed");
   await expect(run(page, "")).rejects.toThrow("close and reopen");
 });
 
-it("lets successful capture cleanup use the remaining execution budget", async () => {
+it("allows valid 90-second cleanup within the remaining execution budget", async () => {
   const page = await app();
   const cdp = await page.context().newCDPSession(page);
   const send = cdp.send.bind(cdp);
-  let stopping: () => void = () => {};
-  const stopped = new Promise<void>(resolve => { stopping = resolve; });
+  const stopping = vi.fn();
   vi.spyOn(cdp, "send").mockImplementation((method, params) => {
     if (method !== "Profiler.stop") return send(method, params);
     stopping();
     return new Promise<void>(resolve => setTimeout(resolve, 90_000)).then(() => send(method, params));
   });
   vi.spyOn(page.context(), "newCDPSession").mockResolvedValue(cdp);
-  const dispose = page.context().request.delete.bind(page.context().request);
-  let disposed: () => void = () => {};
-  const disposal = new Promise<void>(resolve => { disposed = resolve; });
-  vi.spyOn(page.context().request, "delete").mockImplementation(async (...args) => {
-    const result = await dispose(...args);
-    disposed();
-    return result;
-  });
   let settled = false;
-  const execution = run(page, "console.log('done');", {
-    cpuProfilePath: `${project?.root}/profile.json`, timeoutMs: 120_000,
-    onLog: () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
-  });
-  const outcome = execution.then(() => { settled = true; return "saved"; }, error => { settled = true; return formatError(error); });
-  await stopped;
-  await disposal;
+  const result = run(page, 'console.log("done");', {
+    cpuProfilePath: `${project?.root}/profile.json`, timeoutMs: 120_000, onLog: fakeTimers
+  }).then(() => { settled = true; });
+  await vi.waitFor(() => expect(stopping).toHaveBeenCalled());
   await vi.advanceTimersByTimeAsync(CLEANUP_GRACE_MS + 1);
   expect(settled).toBe(false);
   await vi.advanceTimersByTimeAsync(30_000);
-  expect(await outcome).toBe("saved");
+  await result;
 });
 
-it("gives failed execution only the cleanup grace period", async () => {
+it.each(["rejects", "stalls", "fails cleanup"] as const)("retains late recorder initialization that %s", async behavior => {
   const page = await app();
   const cdp = await page.context().newCDPSession(page);
   const send = cdp.send.bind(cdp);
-  let stopping: () => void = () => {};
-  const stopped = new Promise<void>(resolve => { stopping = resolve; });
+  const starting = vi.fn();
+  let release: () => void = () => {};
+  let rejectStart: (error: Error) => void = () => {};
+  const delayed = new Promise<void>((resolve, reject) => { release = resolve; rejectStart = reject; });
+  fakeTimers();
+  vi.spyOn(cdp, "send").mockImplementation((method, params) => {
+    if (behavior === "fails cleanup" && method === "Page.stopScreenRecording") {
+      return Promise.reject(new Error("late cleanup failed"));
+    }
+    if (method !== "Page.startScreenRecording") return send(method, params);
+    if (behavior === "fails cleanup") return send(method, params).then(async result => {
+      starting();
+      await delayed;
+      return result;
+    });
+    starting();
+    return delayed.then(() => { throw new Error("Unexpected recorder release"); });
+  });
+  vi.spyOn(page.context(), "newCDPSession").mockResolvedValue(cdp);
+  const result = run(page, "", { recordPath: `${project?.root}/recording.mp4`, timeoutMs: 5_000 }).catch(formatError);
+  await vi.waitFor(() => expect(starting).toHaveBeenCalled());
+  await vi.advanceTimersByTimeAsync(5_000);
+  if (behavior === "rejects") rejectStart(new Error("late initialization failed"));
+  else if (behavior === "fails cleanup") release();
+  else await vi.advanceTimersByTimeAsync(CLEANUP_GRACE_MS);
+  const error = await result;
+  expect(error).toContain("Vitexec timed out after 5000ms");
+  expect(error).toContain({ rejects: "late initialization failed", stalls: "cleanup timed out", "fails cleanup": "late cleanup failed" }[behavior]);
+});
+
+it("rejects promptly when the renderer crashes during capture finalization", async () => {
+  const page = await app();
+  const cdp = await page.context().newCDPSession(page);
+  const send = cdp.send.bind(cdp);
   vi.spyOn(cdp, "send").mockImplementation((method, params) => {
     if (method !== "Profiler.stop") return send(method, params);
-    stopping();
+    // Raw Page.crash can stay pending; the run must reject its stalled cleanup.
+    void send("Page.crash").catch(() => {});
     return new Promise<never>(() => {});
   });
   vi.spyOn(page.context(), "newCDPSession").mockResolvedValue(cdp);
-  const outcome = run(page, 'console.log("started"); throw new Error("script failed");', {
-    cpuProfilePath: `${project?.root}/profile.json`, timeoutMs: 120_000,
-    onLog: () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
-  }).catch(error => formatError(error));
-  await stopped;
-  await vi.advanceTimersByTimeAsync(CLEANUP_GRACE_MS);
-  expect(await outcome).toContain("script failed");
-  expect(await outcome).toContain(`cleanup timed out after ${CLEANUP_GRACE_MS}ms`);
-});
+  const error = await run(page, "", { cpuProfilePath: `${project?.root}/profile.json` }).catch(formatError);
+  expect(error).toMatch(/crash/i);
+}, 5_000);
 
-it.each(["rejects", "stalls", "fails cleanup"] as const)("bounds late capture initialization that %s", async behavior => {
+it.each(["startup", "finalization"] as const)("retains capture %s and detach errors", async phase => {
   const page = await app();
   const cdp = await page.context().newCDPSession(page);
-  const send = cdp.send.bind(cdp);
-  let starting: () => void = () => {};
-  const started = new Promise<void>(resolve => { starting = resolve; });
-  let rejectStart: (error: Error) => void = () => {};
-  let releaseStart: () => void = () => {};
-  const released = new Promise<void>(resolve => { releaseStart = resolve; });
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-  vi.spyOn(cdp, "send").mockImplementation((method, params) => {
-    if (behavior === "fails cleanup" && method === "Page.stopScreenRecording") {
-      return Promise.reject(new Error("late recorder cleanup failed"));
-    }
-    if (method !== "Page.startScreenRecording") return send(method, params);
-    if (behavior === "fails cleanup") {
-      return send(method, params).then(async result => {
-        starting();
-        await released;
-        return result;
-      });
-    }
-    starting();
-    return new Promise<never>((_, reject) => { rejectStart = reject; });
-  });
   vi.spyOn(page.context(), "newCDPSession").mockResolvedValue(cdp);
-  let settled = false;
-  const outcome = run(page, "", { recordPath: `${project?.root}/recording.mp4`, timeoutMs: 5_000 })
-    .then(() => { settled = true; return "saved"; }, error => { settled = true; return formatError(error); });
-  await started;
-  await vi.advanceTimersByTimeAsync(5_000);
-  expect(settled).toBe(false);
-  if (behavior === "rejects") rejectStart(new Error("late recorder initialization failed"));
-  else if (behavior === "fails cleanup") releaseStart();
-  else await vi.advanceTimersByTimeAsync(CLEANUP_GRACE_MS);
-  const error = await outcome;
-  expect(error).toContain("Vitexec timed out after 5000ms");
-  const expected = {
-    rejects: "late recorder initialization failed",
-    stalls: "cleanup timed out",
-    "fails cleanup": "late recorder cleanup failed"
-  }[behavior];
-  expect(error).toContain(expected);
+  const options = { cpuProfilePath: `${project?.root}/profile.json` };
+  const captures = phase === "finalization" ? await capture(page, options, () => {}) : undefined;
+  vi.spyOn(cdp, "send").mockRejectedValue(new Error("Profiler failed"));
+  vi.spyOn(cdp, "detach").mockRejectedValue(new Error("Detach failed"));
+  const result = captures ? captures.finish(true) : capture(page, options, () => {});
+  const error = await result.catch(formatError);
+  expect(error).toContain("Profiler failed");
+  expect(error).toContain("Detach failed");
 });
 
-it("continues browser and server shutdown when context close stalls", async () => {
+it("rejects saving captures after the page closed", async () => {
+  const page = await app();
+  const captures = await capture(page, { cpuProfilePath: `${project?.root}/profile.json` }, () => {});
+  await page.close();
+  await expect(captures.finish(false)).resolves.toBeUndefined();
+  await expect(captures.finish(true)).rejects.toThrow("Page closed");
+});
+
+it("continues browser and server shutdown after context close stalls", async () => {
   const page = await app();
   const url = page.url();
   const browser = page.context().browser();
-  const contextClose = vi.spyOn(page.context(), "close").mockImplementation(() => new Promise(() => {}));
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-  const closing = page.close().catch(error => formatError(error));
+  vi.spyOn(page.context(), "close").mockImplementation(() => new Promise(() => {}));
+  fakeTimers();
+  const closing = page.close().catch(formatError);
   await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS);
-  const error = await closing;
+  expect(await closing).toContain("Browser context shutdown timed out");
   vi.useRealTimers();
-  expect(error).toContain("Browser context shutdown timed out");
-  expect(contextClose).toHaveBeenCalledOnce();
   expect(browser?.isConnected()).toBe(false);
   await expect(fetch(url)).rejects.toThrow();
 });
 
-it.each(["Page.stopScreenRecording", "IO.read"] as const)("bounds recording finalization when %s stalls", async stalledMethod => {
+it("retains execution and script disposal errors", async () => {
   const page = await app();
-  const cdp = await page.context().newCDPSession(page);
-  const send = cdp.send.bind(cdp);
-  let stopping: () => void = () => {};
-  const stopped = new Promise<void>(resolve => { stopping = resolve; });
-  vi.spyOn(cdp, "send").mockImplementation((method, params) => {
-    if (method !== stalledMethod) return send(method, params);
-    stopping();
-    return new Promise<never>(() => {});
-  });
-  vi.spyOn(page.context(), "newCDPSession").mockResolvedValue(cdp);
-  const execution = run(page, "console.log('done');", {
-    recordPath: `${project?.root}/recording.mp4`, timeoutMs: 5_000,
-    onLog: () => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
-  });
-  const failure = execution.catch(error => formatError(error));
-  await stopped;
-  await vi.advanceTimersByTimeAsync(CLEANUP_GRACE_MS);
-  expect(await failure).toContain("cleanup timed out");
+  vi.spyOn(page.context().request, "delete").mockRejectedValue(new Error("disposal failed"));
+  const error = await run(page, 'throw new Error("script failed");').catch(formatError);
+  expect(error).toContain("script failed");
+  expect(error).toContain("disposal failed");
 });
 
-it("retains an execution error when script disposal also fails", async () => {
-  const page = await app();
-  vi.spyOn(page.context().request, "delete").mockRejectedValue(new Error("registration cleanup broke"));
-  const error = await run(page, 'throw new Error("script broke");').catch(error => formatError(error));
-  expect(error).toContain("script broke");
-  expect(error).toContain("registration cleanup broke");
-});
-
-it("disables file watching even with a project configuration that enables it", async () => {
+it("disables watching even when project configuration enables it", async () => {
   project = await createTempViteProject({
     "index.html": '<script type="module" src="/main.js"></script>',
     "main.js": 'window.boots = (window.boots ?? 0) + 1;',

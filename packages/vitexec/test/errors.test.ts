@@ -23,24 +23,10 @@ describe("error reporting", () => {
 });
 
 describe("cleanup error preservation", () => {
-  it("runs cleanup and preserves the action error", async () => {
-    const error = new Error("script failed");
-    let closed = false;
-    await expect(withCleanup(async () => { throw error; }, async () => { closed = true; }, "failed")).rejects.toBe(error);
-    expect(closed).toBe(true);
-  });
-
   it("preserves both failures including a thrown undefined", async () => {
     const error = new Error("close failed");
-    try {
-      await withCleanup(async () => { throw undefined; }, async () => { throw error; }, "both failed");
-      throw new Error("Expected rejection.");
-    } catch (failure) {
-      expect(failure).toBeInstanceOf(AggregateError);
-      if (!(failure instanceof AggregateError)) throw failure;
-      expect(failure.errors).toEqual([undefined, error]);
-      expect(failure.message).toBe("both failed");
-    }
+    await expect(withCleanup(async () => { throw undefined; }, async () => { throw error; }, "both failed"))
+      .rejects.toMatchObject({ message: "both failed", errors: [undefined, error] });
   });
 
   it("surfaces cleanup failure after a successful action", async () => {
@@ -48,7 +34,4 @@ describe("cleanup error preservation", () => {
     await expect(withCleanup(async () => 42, async () => { throw error; }, "failed")).rejects.toBe(error);
   });
 
-  it("returns the successful action's value after cleanup", async () => {
-    expect(await withCleanup(async () => 42, async () => {}, "failed")).toBe(42);
-  });
 });

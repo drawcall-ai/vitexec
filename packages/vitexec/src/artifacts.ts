@@ -1,7 +1,7 @@
 import { createWriteStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
-import type { Page } from "playwright";
-import { openCdp, type Cdp } from "./cdp.js";
+import type { CDPSession, Page } from "playwright";
+import { withCleanup } from "./errors.js";
 import { ensureParentDir, writeJson } from "./files.js";
 import { saveHeapSnapshotSummary } from "./heap.js";
 import type { PageRunOptions } from "./run.js";
@@ -19,16 +19,14 @@ type PerformanceTraceCapture = {
   complete: Promise<void>;
 };
 
-async function startPerformanceTrace(cdp: Cdp): Promise<PerformanceTraceCapture> {
+async function startPerformanceTrace(cdp: CDPSession): Promise<PerformanceTraceCapture> {
   const events: unknown[] = [];
   let resolveComplete: (() => void) | undefined;
   const complete = new Promise<void>((resolve) => {
     resolveComplete = resolve;
   });
 
-  cdp.on("Tracing.dataCollected", (event) => {
-    if (isTraceDataCollectedEvent(event)) events.push(...event.value);
-  });
+  cdp.on("Tracing.dataCollected", (event: { value: unknown[] }) => events.push(...event.value));
   cdp.on("Tracing.tracingComplete", () => resolveComplete?.());
 
   await cdp.send("Tracing.start", {
@@ -47,34 +45,25 @@ async function startPerformanceTrace(cdp: Cdp): Promise<PerformanceTraceCapture>
   return { events, complete };
 }
 
-function isTraceDataCollectedEvent(value: unknown): value is { value: unknown[] } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "value" in value &&
-    Array.isArray(value.value)
-  );
-}
-
-async function finishCpuProfile(cdp: Cdp, path?: string): Promise<void> {
+async function finishCpuProfile(cdp: CDPSession, path?: string): Promise<void> {
   const result = await cdp.send("Profiler.stop");
   if (path) await writeJson(path, result.profile);
 }
 
 async function finishTrace(
-  cdp: Cdp,
+  cdp: CDPSession,
   trace: PerformanceTraceCapture,
   path?: string
 ): Promise<void> {
   await cdp.send("Tracing.end");
-  await cdp.wait(trace.complete);
+  await trace.complete;
   if (path) await writeJson(path, { traceEvents: trace.events });
 }
 
 type Recording = { stream: string };
 
 async function startRecording(
-  cdp: Cdp,
+  cdp: CDPSession,
   page: Page,
   options: Pick<PageRunOptions, "recordAudio" | "recordFps">
 ): Promise<Recording> {
@@ -89,7 +78,7 @@ async function startRecording(
   });
 }
 
-async function finishRecording(cdp: Cdp, recording: Recording, path?: string): Promise<void> {
+async function finishRecording(cdp: CDPSession, recording: Recording, path?: string): Promise<void> {
   const stopped = await cdp.send("Page.stopScreenRecording");
   if (stopped.stream !== recording.stream) {
     throw new Error("Chromium returned a different recording stream when stopping.");
@@ -102,7 +91,7 @@ async function finishRecording(cdp: Cdp, recording: Recording, path?: string): P
   await pipeline(readCdpStream(cdp, stopped.stream), createWriteStream(path));
 }
 
-async function* readCdpStream(cdp: Cdp, stream: string): AsyncGenerator<Buffer> {
+async function* readCdpStream(cdp: CDPSession, stream: string): AsyncGenerator<Buffer> {
   const errors: unknown[] = [];
   try {
     for (;;) {
@@ -121,14 +110,13 @@ async function* readCdpStream(cdp: Cdp, stream: string): AsyncGenerator<Buffer> 
 }
 
 export async function capture(page: Page, options: PageRunOptions, log: (line: string) => void) {
-  const cdp = await openCdp(page);
+  const cdp = await page.context().newCDPSession(page);
   let recording: Recording | undefined;
   let trace: PerformanceTraceCapture | undefined;
   let cpu = false;
 
-  const finish = async (save: boolean): Promise<void> => {
+  const finish = (save: boolean): Promise<void> => withCleanup(async () => {
     if (page.isClosed()) {
-      await cdp.detach();
       if (save) throw new Error("Page closed before captures could be saved.");
       return;
     }
@@ -137,23 +125,21 @@ export async function capture(page: Page, options: PageRunOptions, log: (line: s
       trace ? finishTrace(cdp, trace, save ? options.performanceTracePath : undefined) : undefined,
       recording ? finishRecording(cdp, recording, save ? options.recordPath : undefined) : undefined
     ]);
-    const errors: unknown[] = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
-    if (save && !errors.length) {
-      try {
-        if (options.heapSnapshotPath) await saveHeapSnapshotSummary(cdp, options.heapSnapshotPath);
-        for (const [name, path] of [
-          ["cpu-profile", options.cpuProfilePath],
-          ["performance-trace", options.performanceTracePath],
-          ["heap-snapshot", options.heapSnapshotPath],
-          ["recording", options.recordPath]
-        ]) {
-          if (path) log(`[${name}] ${path}`);
-        }
-      } catch (error) { errors.push(error); }
-    }
-    try { await cdp.detach(); } catch (error) { errors.push(error); }
+    const errors = results.flatMap(result => result.status === "rejected" ? [result.reason] : []);
     if (errors.length) throw new AggregateError(errors, "Failed to finish Vitexec captures.");
-  };
+    if (!save) return;
+    if (options.heapSnapshotPath) await saveHeapSnapshotSummary(cdp, options.heapSnapshotPath);
+    for (const [name, path] of [
+      ["cpu-profile", options.cpuProfilePath],
+      ["performance-trace", options.performanceTracePath],
+      ["heap-snapshot", options.heapSnapshotPath],
+      ["recording", options.recordPath]
+    ]) {
+      if (path) log(`[${name}] ${path}`);
+    }
+  }, async () => {
+    if (!page.isClosed()) await cdp.detach();
+  }, "Failed to finish captures and detach CDP.");
 
   try {
     if (options.recordPath) recording = await startRecording(cdp, page, options);
@@ -165,9 +151,6 @@ export async function capture(page: Page, options: PageRunOptions, log: (line: s
     if (options.performanceTracePath) trace = await startPerformanceTrace(cdp);
     return { finish };
   } catch (error) {
-    try { await finish(false); } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "Failed to start Vitexec captures and clean up.");
-    }
-    throw error;
+    return withCleanup(async () => { throw error; }, () => finish(false), "Failed to start Vitexec captures and clean up.");
   }
 }

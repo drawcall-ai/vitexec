@@ -21,17 +21,30 @@ it("forwards visible launch options to a remote endpoint", async () => {
   expect(JSON.parse(options?.headers?.["x-playwright-launch-options"] ?? "{}")).toMatchObject({ headless: false });
 });
 
-it.each([undefined, true, false])("applies gpu=%s to local and remote launches", async gpu => {
+it.each([
+  [undefined, undefined, undefined],
+  [true, true, true],
+  [false, false, false],
+  [true, true, false],
+  [true, false, true]
+])("launches locally and remotely with gpu=%s, audioOutput=%s, audio=%s", async (gpu, audioOutput, audio) => {
   const stopped = new Error("launch intercepted");
   const launch = vi.spyOn(chromium, "launch").mockRejectedValue(stopped);
   const connect = vi.spyOn(chromium, "connect").mockRejectedValue(stopped);
-  await expect(openBrowser({ gpu })).rejects.toBe(stopped);
-  await expect(openBrowser({ gpu, browserWsEndpoint: "ws://localhost:1234" })).rejects.toBe(stopped);
-  const local = launch.mock.calls[0]?.[0]?.args;
-  const remote = JSON.parse(connect.mock.calls[0]?.[1]?.headers?.["x-playwright-launch-options"] ?? "{}").args;
-  expect(remote).toEqual(local);
-  expect(local).toContain(gpu === false ? "--disable-gpu" : "--enable-gpu");
-  expect(local).not.toContain(gpu === false ? "--enable-gpu" : "--disable-gpu");
+  const options = { gpu, audioOutput, audio, timeoutMs: 1234 };
+  await expect(openBrowser(options)).rejects.toBe(stopped);
+  await expect(openBrowser({ ...options, browserWsEndpoint: "ws://localhost:1234" })).rejects.toBe(stopped);
+  const local = launch.mock.calls[0]?.[0];
+  const remote: unknown = JSON.parse(connect.mock.calls[0]?.[1]?.headers?.["x-playwright-launch-options"] ?? "{}");
+  expect(remote).toMatchObject({ args: local?.args, timeout: 1234 });
+  expect(local?.timeout).toBe(1234);
+  expect(connect.mock.calls[0]?.[1]?.timeout).toBe(1234);
+  expect(local?.args).toContain(gpu === false ? "--disable-gpu" : "--enable-gpu");
+  expect(local?.args).not.toContain(gpu === false ? "--enable-gpu" : "--disable-gpu");
+  expect(local?.args?.includes("--disable-audio-output")).toBe(audioOutput !== true);
+  expect(local?.ignoreDefaultArgs).toEqual(audio === false ? undefined : ["--mute-audio"]);
+  if (audio === false) expect(remote).not.toHaveProperty("ignoreDefaultArgs");
+  else expect(remote).toMatchObject({ ignoreDefaultArgs: ["--mute-audio"] });
 });
 
 it("lets --no-gpu override the environment without hiding environment defaults", () => {
@@ -42,36 +55,6 @@ it("lets --no-gpu override the environment without hiding environment defaults",
   expect(parse([], {})).toBeUndefined();
   expect(parse([], { VITEXEC_GPU: "false" })).toBe(false);
   expect(parse(["--no-gpu"], { VITEXEC_GPU: "true" })).toBe(false);
-});
-
-it.each([undefined, true, false])("applies audioOutput=%s without muting recorded audio", async audioOutput => {
-  const stopped = new Error("launch intercepted");
-  const launch = vi.spyOn(chromium, "launch").mockRejectedValue(stopped);
-  const connect = vi.spyOn(chromium, "connect").mockRejectedValue(stopped);
-  await expect(openBrowser({ audioOutput })).rejects.toBe(stopped);
-  await expect(openBrowser({ audioOutput, browserWsEndpoint: "ws://localhost:1234" })).rejects.toBe(stopped);
-  const local = launch.mock.calls[0]?.[0];
-  const remote: unknown = JSON.parse(connect.mock.calls[0]?.[1]?.headers?.["x-playwright-launch-options"] ?? "{}");
-  expect(remote).toMatchObject({ args: local?.args, ignoreDefaultArgs: ["--mute-audio"] });
-  expect(local?.ignoreDefaultArgs).toContain("--mute-audio");
-  expect(local?.args?.includes("--disable-audio-output")).toBe(audioOutput !== true);
-});
-
-it("keeps audio disabled when requested", async () => {
-  const stopped = new Error("launch intercepted");
-  const launch = vi.spyOn(chromium, "launch").mockRejectedValue(stopped);
-  await expect(openBrowser({ audio: false })).rejects.toBe(stopped);
-  expect(launch.mock.calls[0]?.[0]?.ignoreDefaultArgs).toBeUndefined();
-});
-
-it("forwards the browser timeout to launch and connect", async () => {
-  const stopped = new Error("launch intercepted");
-  const launch = vi.spyOn(chromium, "launch").mockRejectedValue(stopped);
-  const connect = vi.spyOn(chromium, "connect").mockRejectedValue(stopped);
-  await expect(openBrowser({ timeoutMs: 1234 })).rejects.toBe(stopped);
-  await expect(openBrowser({ timeoutMs: 1234, browserWsEndpoint: "ws://localhost:1234" })).rejects.toBe(stopped);
-  expect(launch.mock.calls[0]?.[0]?.timeout).toBe(1234);
-  expect(connect.mock.calls[0]?.[1]?.timeout).toBe(1234);
 });
 
 it.each(["open", "once"] as const)("parses audio output flags and environment for %s", scope => {

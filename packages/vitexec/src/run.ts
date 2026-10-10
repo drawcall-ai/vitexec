@@ -4,7 +4,6 @@ import { capture, saveScreenshot } from "./artifacts.js";
 import { registerScript } from "./injection.js";
 import { installInput } from "./input/playwright.js";
 import { logs } from "./logs.js";
-import { withCleanup } from "./errors.js";
 import { CLEANUP_GRACE_MS, within } from "./timeout.js";
 export { validateRunOptions, VITEXEC_TIMEOUT_MS } from "./options.js";
 export type { PageRunOptions, AppRunOptions } from "./options.js";
@@ -37,7 +36,7 @@ async function prepare(page: Page) {
       if (captures) profiling = true;
       active.add(id);
     },
-    timeout() { uncertain = true; },
+    invalidate() { uncertain = true; },
     unlock(captures: boolean) { if (captures) profiling = false; },
     async finish(id: string) {
       active.delete(id);
@@ -60,65 +59,71 @@ export async function run(page: Page, code: string, options: PageRunOptions = {}
   const interrupted = new Promise<never>((_, fail) => { reject = fail; });
   const log = options.onLog ?? (() => {});
   const timer = setTimeout(() => {
-    state.timeout();
+    state.invalidate();
     reject(new Error(`Vitexec timed out after ${timeout}ms. Code may still be running; close and reopen the page.`));
   }, Math.max(0, deadline - Date.now()));
+  const errors: unknown[] = [];
   let script: Awaited<ReturnType<typeof registerScript>> | undefined;
   let captures: Awaited<ReturnType<typeof capture>> | undefined;
-  let starting: Promise<Awaited<ReturnType<typeof registerScript>>> | undefined;
-  let failure: { error: unknown } | undefined;
-  let completed = false;
   let ended = false;
-  await withCleanup(async () => {
+  let terminate: (error: Error) => void = () => {};
+  const terminal = new Promise<Error>(resolve => { terminate = resolve; });
+  const onClose = () => terminate(new Error("Page closed; capture cleanup interrupted."));
+  const onCrash = () => terminate(new Error("Page crashed; capture cleanup interrupted."));
+  page.once("close", onClose);
+  page.once("crash", onCrash);
+  if (page.isClosed()) onClose();
+
+  const startup = (async () => {
     state.collector.add(id, { log, fail: reject });
-    const startup = (async () => {
-      const registered = await registerScript(page, id, code, options.moduleExtension);
-      script = registered;
-      if (!ended && exclusive) captures = await capture(page, options, log);
-      return registered;
-    })();
-    starting = startup;
-    const execution = (async () => {
-      const registered = await startup;
+    const registered = await registerScript(page, id, code, options.moduleExtension);
+    script = registered;
+    if (!ended && exclusive) captures = await capture(page, options, log);
+    return registered;
+  })();
+
+  async function cleanup(save: boolean) {
+    try { await startup; } catch (error) {
+      if (!errors.includes(error)) errors.push(error);
+    }
+    const results = await Promise.allSettled([
+      state.finish(id),
+      captures?.finish(save),
+      script?.dispose()
+    ]);
+    errors.push(...results.flatMap(result => result.status === "rejected" ? [result.reason] : []));
+  }
+
+  try {
+    const execution = startup.then(async registered => {
       if (ended) return;
       await page.evaluate(`import(${JSON.stringify(registered.url)}).then(() => undefined)`);
       await state.collector.drain();
-      if (ended) return;
-      if (options.screenshotPath) {
-        await saveScreenshot(page, options.screenshotPath);
-        log(`[screenshot] ${options.screenshotPath}`);
-      }
-    })();
-    try {
-      await Promise.race([execution, interrupted]);
-      completed = true;
-    } catch (error) {
-      failure = { error };
-      throw error;
-    }
-  }, async () => {
+      if (ended || !options.screenshotPath) return;
+      await saveScreenshot(page, options.screenshotPath);
+      log(`[screenshot] ${options.screenshotPath}`);
+    });
+    try { await Promise.race([execution, interrupted]); }
+    catch (error) { errors.push(error); }
     ended = true;
     clearTimeout(timer);
     state.collector.remove(id);
-    const cleanupTimeout = completed ? Math.max(CLEANUP_GRACE_MS, deadline - Date.now()) : CLEANUP_GRACE_MS;
+
+    const failures = errors.length;
+    const save = failures === 0;
+    const cleanupTimeout = save ? Math.max(CLEANUP_GRACE_MS, deadline - Date.now()) : CLEANUP_GRACE_MS;
     try {
-      const errors = await within((async () => {
-        const errors: unknown[] = [];
-        try { await starting; } catch (error) {
-          if (!failure || failure.error !== error) errors.push(error);
-        }
-        const cleanup = await Promise.allSettled([
-          state.finish(id),
-          captures?.finish(completed),
-          script?.dispose()
-        ]);
-        errors.push(...cleanup.flatMap(result => result.status === "rejected" ? [result.reason] : []));
-        return errors;
-      })(), cleanupTimeout, `Vitexec cleanup timed out after ${cleanupTimeout}ms; captures may be incomplete. Close and reopen the page.`);
-      if (errors.length) throw new AggregateError(errors, "Vitexec cleanup failed.");
-    } catch (error) {
-      state.timeout();
-      throw error;
-    } finally { state.unlock(exclusive); }
-  }, "Vitexec execution and cleanup failed.");
+      await within(Promise.race([
+        cleanup(save),
+        terminal.then(error => { throw error; })
+      ]), cleanupTimeout, `Vitexec cleanup timed out after ${cleanupTimeout}ms; captures may be incomplete. Close and reopen the page.`);
+    } catch (error) { errors.push(error); }
+    if (errors.length > failures) state.invalidate();
+    if (errors.length > 1) throw new AggregateError(errors, "Vitexec execution or cleanup failed.");
+    if (errors.length) throw errors[0];
+  } finally {
+    state.unlock(exclusive);
+    page.off("close", onClose);
+    page.off("crash", onCrash);
+  }
 }

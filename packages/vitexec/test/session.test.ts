@@ -82,7 +82,6 @@ describe("session CLI", () => {
     const prefix = mode === "session" ? ["run", "game"] : [];
     const result = await launch([...prefix, "void 0", "--cpu-profile", "index.html/profile.json"]).done;
     expect(result.code).toBe(1);
-    expect(result.output).toContain("Vitexec cleanup failed.");
     expect(result.output).toContain("Failed to finish Vitexec captures.");
     expect(result.output).toContain("EEXIST");
     expect(result.output).toContain("index.html");
