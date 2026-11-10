@@ -73,5 +73,8 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   void main().catch(error => {
     console.error(`vitexec failed: ${formatError(error)}`);
     process.exitCode = 1;
+    // Playwright force-kills a hung browser, but helpers outside its process group (crashpad)
+    // can hold its stdio pipes open forever, which would keep this process alive.
+    setTimeout(() => process.exit(1), 1_000).unref();
   });
 }
