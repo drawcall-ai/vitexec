@@ -15,6 +15,8 @@ Use vitexec artifacts for live-browser slowness, jank, leaks, or network behavio
 
 Capture both `--cpu-profile` and `--performance-trace` when unsure whether the issue is JS or browser rendering. Heap output is vitexec-specific: it is decoded into jq-friendly `nodes`, `edges`, and `summary`.
 
+GPU cost scales with device pixels, and pages run at a device pixel ratio of 1 unless `--device-scale-factor` is passed when opening the app. Set it at open time: apps usually read `devicePixelRatio` once at startup, so a script cannot change it later.
+
 ## First Queries
 
 ```sh

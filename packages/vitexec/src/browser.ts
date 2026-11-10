@@ -1,8 +1,10 @@
-import { access } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { access, mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import spawn from "nano-spawn";
+import spawn, { SubprocessError } from "nano-spawn";
 import type { Browser } from "playwright";
+import { withCleanup } from "./errors.js";
 import { validateRunOptions, VITEXEC_TIMEOUT_MS } from "./options.js";
 
 export type OpenBrowserOptions = {
@@ -57,7 +59,46 @@ export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Bro
     });
   }
   await ensureChromiumInstalled({ log: options.log });
-  return chromium.launch({ channel: "chromium", ...launchOptions });
+  if (process.platform !== "darwin") return chromium.launch({ channel: "chromium", ...launchOptions });
+  // macOS Chromium starts crashpad handlers in their own session, out of reach of Playwright's
+  // process-group kill. A hung browser's handlers keep its stderr pipe open, so browser.close()
+  // and the caller's process never finish. A per-launch database lets us kill exactly these.
+  // Crashpad reports the database by its real path (/private/var, not /var).
+  const crashpad = await realpath(await mkdtemp(join(tmpdir(), "vitexec-crashpad-")));
+  try {
+    const browser = await chromium.launch({
+      channel: "chromium",
+      ...launchOptions,
+      env: { ...process.env, BREAKPAD_DUMP_LOCATION: crashpad }
+    });
+    // Playwright waits for the handlers' exit before close() resolves, so start killing them on
+    // disconnect; close() then reports the cleanup result.
+    let cleanup = Promise.resolve();
+    browser.on("disconnected", () => {
+      cleanup = killCrashpad(crashpad);
+      cleanup.catch(() => {});
+    });
+    const close = browser.close.bind(browser);
+    browser.close = options => withCleanup(() => close(options), () => cleanup, "Browser close and crashpad cleanup failed.");
+    return browser;
+  } catch (error) {
+    // A launch can fail after Chromium already started its handlers.
+    try { await killCrashpad(crashpad); } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], "Browser launch and crashpad cleanup failed.");
+    }
+    throw error;
+  }
+}
+
+async function killCrashpad(database: string): Promise<void> {
+  try {
+    const pattern = `--database=${database}`.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    await spawn("pkill", ["-KILL", "-f", "--", pattern]);
+  } catch (error) {
+    // pkill exits with 1 when the handlers already exited with the browser.
+    if (!(error instanceof SubprocessError) || error.exitCode !== 1) throw error;
+  }
+  await rm(database, { recursive: true, force: true });
 }
 
 export function createRemoteBrowserHeaders(
