@@ -132,14 +132,14 @@ describe("page execution", () => {
     } finally { await browser.close(); }
   });
 
-  it("opens configured base paths and viewport sizes", async () => {
+  it("opens configured base paths, viewport sizes, and device scale factors", async () => {
     project = await createTempViteProject({
       "index.html": '<main>nested</main>',
       "vite.config.js": 'export default { base: "/nested/" };'
     });
-    page = await openPage({ root: project.root, viewport: "390x844", gpu: false });
+    page = await openPage({ root: project.root, viewport: "390x844", deviceScaleFactor: 2, gpu: false });
     expect(page.url()).toContain("/nested/");
-    expect(await collect(page, 'console.log(innerWidth, innerHeight)')).toEqual(["[log] 390 844"]);
+    expect(await collect(page, 'console.log(innerWidth, innerHeight, devicePixelRatio)')).toEqual(["[log] 390 844 2"]);
   });
 
 });

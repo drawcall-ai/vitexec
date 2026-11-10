@@ -10,6 +10,7 @@ export const VITEXEC_ENV = {
   browserWsEndpoint: "VITEXEC_BROWSER_WS_ENDPOINT",
   config: "VITEXEC_CONFIG",
   cpuProfile: "VITEXEC_CPU_PROFILE",
+  deviceScaleFactor: "VITEXEC_DEVICE_SCALE_FACTOR",
   gpu: "VITEXEC_GPU",
   heapSnapshot: "VITEXEC_HEAP_SNAPSHOT",
   networkTrace: "VITEXEC_NETWORK_TRACE",
@@ -33,6 +34,7 @@ export type CliOptions = {
   browserWsEndpoint?: string;
   config?: string;
   cpuProfile?: string;
+  deviceScaleFactor?: number;
   gpu?: boolean;
   heapSnapshot?: string;
   networkTrace?: string;
@@ -69,6 +71,7 @@ export function createRunOptions(
     browserWsEndpoint: options.browserWsEndpoint ?? envString(env, VITEXEC_ENV.browserWsEndpoint),
     configFile: options.config ?? envString(env, VITEXEC_ENV.config),
     cpuProfilePath: options.cpuProfile ?? envString(env, VITEXEC_ENV.cpuProfile),
+    deviceScaleFactor: options.deviceScaleFactor ?? envNumber(env, VITEXEC_ENV.deviceScaleFactor, parseDeviceScaleFactor),
     gpu: options.gpu ?? envBoolean(env, VITEXEC_ENV.gpu),
     heapSnapshotPath: options.heapSnapshot ?? envString(env, VITEXEC_ENV.heapSnapshot),
     moduleExtension: context.moduleExtension,
@@ -117,6 +120,15 @@ function parseTimeoutSeconds(value: string): number {
   }
 
   return seconds;
+}
+
+function parseDeviceScaleFactor(value: string): number {
+  const factor = Number(value);
+  if (!Number.isFinite(factor) || factor <= 0) {
+    throw new InvalidArgumentError("device scale factor must be a positive number");
+  }
+
+  return factor;
 }
 
 function parseRecordFps(value: string): number {
@@ -181,7 +193,8 @@ export function addOptions(command: Command, scope: "open" | "run" | "once"): Co
       .option("--network-trace <path>", "write a HAR when the app closes")
       .option("--path <path>", "Vite page path")
       .option("--touch", "emulate touch input")
-      .option("--viewport <WIDTHxHEIGHT>", "viewport size (default 1280x720)");
+      .option("--viewport <WIDTHxHEIGHT>", "viewport size in CSS pixels (default 1280x720)")
+      .option("--device-scale-factor <ratio>", "device pixel ratio (default 1)", parseDeviceScaleFactor);
   }
   if (scope !== "open") {
     command

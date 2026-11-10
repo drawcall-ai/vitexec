@@ -6,7 +6,7 @@ import { ensureParentDir } from "./files.js";
 import { preparePage } from "./run.js";
 import { BROWSER_SHUTDOWN_TIMEOUT_MS, SHUTDOWN_TIMEOUT_MS, within } from "./timeout.js";
 
-export type OpenPageOptions = Pick<AppRunOptions, "root" | "configFile" | "path" | "viewport" | "touch" | "networkTracePath" | "timeoutMs" | "onLog"> & Omit<OpenBrowserOptions, "log" | "handleSignals"> & { signal?: AbortSignal };
+export type OpenPageOptions = Pick<AppRunOptions, "root" | "configFile" | "path" | "viewport" | "deviceScaleFactor" | "touch" | "networkTracePath" | "timeoutMs" | "onLog"> & Omit<OpenBrowserOptions, "log" | "handleSignals"> & { signal?: AbortSignal };
 
 /** Open an owned app. Awaiting page.close() also closes its browser and Vite server. */
 export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
@@ -38,6 +38,7 @@ export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
     context = await browser.newContext({
       ignoreHTTPSErrors: true,
       viewport: parseViewport(options.viewport) ?? { width: 1280, height: 720 },
+      deviceScaleFactor: options.deviceScaleFactor,
       hasTouch: options.touch,
       ...(options.networkTracePath ? { recordHar: { path: options.networkTracePath } } : {})
     });

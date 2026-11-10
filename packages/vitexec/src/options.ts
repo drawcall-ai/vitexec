@@ -27,8 +27,10 @@ export type AppRunOptions = PageRunOptions & {
   path?: string;
   root?: string;
   touch?: boolean;
-  /** Context viewport as WIDTHxHEIGHT. Defaults to 1280x720. */
+  /** Context viewport as WIDTHxHEIGHT in CSS pixels. Defaults to 1280x720. */
   viewport?: string;
+  /** Device pixel ratio; screenshots come out at device pixels. Defaults to 1. */
+  deviceScaleFactor?: number;
 };
 
 export function validateRunOptions(options: AppRunOptions): void {
@@ -40,6 +42,9 @@ export function validateRunOptions(options: AppRunOptions): void {
   }
   if (options.timeoutMs !== undefined && (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0)) {
     throw new Error("timeoutMs must be a finite positive number");
+  }
+  if (options.deviceScaleFactor !== undefined && (!Number.isFinite(options.deviceScaleFactor) || options.deviceScaleFactor <= 0)) {
+    throw new Error("deviceScaleFactor must be a finite positive number");
   }
   parseViewport(options.viewport);
 }

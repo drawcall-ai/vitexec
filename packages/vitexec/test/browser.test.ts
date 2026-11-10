@@ -1,3 +1,7 @@
+import { mkdtemp, readdir, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import spawn from "nano-spawn";
 import { afterEach, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { addOptions, createRunOptions } from "../src/cli/options.js";
@@ -75,3 +79,22 @@ it("enables remote speaker output without requiring a recording", () => {
   expect(launchOptions).toMatchObject({ ignoreDefaultArgs: ["--mute-audio"] });
   expect(launchOptions).toHaveProperty("args", expect.not.arrayContaining(["--disable-audio-output"]));
 });
+
+it.runIf(process.platform === "darwin")("closes a hung browser whose crashpad handlers hold its stderr", async () => {
+  // Crashpad databases live in the launch's temp directory; a private TMPDIR finds only ours.
+  const tmp = await realpath(await mkdtemp(join(tmpdir(), "vitexec-hang-")));
+  vi.stubEnv("TMPDIR", tmp);
+  const marker = `--vitexec-hang-${process.pid}`;
+  const browser = await openBrowser({ gpu: false, browserArgs: [marker] });
+  try {
+    await browser.newPage();
+    await spawn("pkill", ["-STOP", "-f", "--", `--database=${tmp}`]);
+    await spawn("pkill", ["-STOP", "-f", "--", `MacOS/.*${marker}`]);
+    await browser.close();
+    expect(await readdir(tmp)).toEqual([]);
+  } finally {
+    vi.unstubAllEnvs();
+    await spawn("pkill", ["-KILL", "-f", "--", `--database=${tmp}`]).catch(() => {});
+    await rm(tmp, { recursive: true, force: true });
+  }
+}, 60_000);
