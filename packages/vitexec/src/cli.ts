@@ -73,5 +73,7 @@ if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.me
   void main().catch(error => {
     console.error(`vitexec failed: ${formatError(error)}`);
     process.exitCode = 1;
+    // Failed shutdowns can leave handles (such as browser pipes) that would keep the process alive.
+    setTimeout(() => process.exit(1), 1_000).unref();
   });
 }

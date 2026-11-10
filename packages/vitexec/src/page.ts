@@ -1,6 +1,6 @@
 import type { Page, Browser, BrowserContext } from "playwright";
 import { openServer } from "./app.js";
-import { openBrowser, type OpenBrowserOptions } from "./browser.js";
+import { killBrowser, openBrowser, type OpenBrowserOptions } from "./browser.js";
 import { validateRunOptions, parseViewport, VITEXEC_TIMEOUT_MS, type AppRunOptions } from "./options.js";
 import { ensureParentDir } from "./files.js";
 import { preparePage } from "./run.js";
@@ -25,7 +25,13 @@ export async function openPage(options: OpenPageOptions = {}): Promise<Page> {
     ] as const) {
       try {
         await within(Promise.resolve(dispose()), timeout, `${name} shutdown timed out after ${timeout}ms.`);
-      } catch (error) { errors.push(error); }
+      } catch (error) {
+        errors.push(error);
+        // A hung browser keeps its pipes, and with them the event loop, alive.
+        if (name === "Browser" && browser) {
+          try { killBrowser(browser); } catch (killError) { errors.push(killError); }
+        }
+      }
     }
     if (errors.length) throw new AggregateError(errors, "Failed to close the app.");
     if (context && options.networkTracePath) options.onLog?.(`[network-trace] ${options.networkTracePath}`);

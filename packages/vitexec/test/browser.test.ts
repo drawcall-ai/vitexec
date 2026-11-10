@@ -2,7 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { Command } from "commander";
 import { addOptions, createRunOptions } from "../src/cli/options.js";
 import { chromium } from "playwright";
-import { createRemoteBrowserHeaders, openBrowser } from "../src/browser.js";
+import { createRemoteBrowserHeaders, killBrowser, openBrowser } from "../src/browser.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -36,7 +36,7 @@ it.each([
   await expect(openBrowser({ ...options, browserWsEndpoint: "ws://localhost:1234" })).rejects.toBe(stopped);
   const local = launch.mock.calls[0]?.[0];
   const remote: unknown = JSON.parse(connect.mock.calls[0]?.[1]?.headers?.["x-playwright-launch-options"] ?? "{}");
-  expect(remote).toMatchObject({ args: local?.args, timeout: 1234 });
+  expect(remote).toMatchObject({ args: local?.args?.filter(arg => !arg.startsWith("--vitexec-browser=")), timeout: 1234 });
   expect(local?.timeout).toBe(1234);
   expect(connect.mock.calls[0]?.[1]?.timeout).toBe(1234);
   expect(local?.args).toContain(gpu === false ? "--disable-gpu" : "--enable-gpu");
@@ -45,6 +45,14 @@ it.each([
   expect(local?.ignoreDefaultArgs).toEqual(audio === false ? undefined : ["--mute-audio"]);
   if (audio === false) expect(remote).not.toHaveProperty("ignoreDefaultArgs");
   else expect(remote).toMatchObject({ ignoreDefaultArgs: ["--mute-audio"] });
+});
+
+it.skipIf(process.platform === "win32")("kills a launched browser whose shutdown hangs", async () => {
+  const browser = await openBrowser({ gpu: false });
+  const disconnected = new Promise(resolve => browser.once("disconnected", resolve));
+  killBrowser(browser);
+  await disconnected;
+  killBrowser(browser);
 });
 
 it("lets --no-gpu override the environment without hiding environment defaults", () => {
