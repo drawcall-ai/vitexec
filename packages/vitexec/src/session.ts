@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
-import { formatError, hasCode } from "./errors.js";
+import { formatError } from "./errors.js";
 import { CLEANUP_GRACE_MS, SHUTDOWN_TIMEOUT_MS, within } from "./timeout.js";
 import { validateRunOptions, VITEXEC_TIMEOUT_MS } from "./options.js";
 import { openPage, type OpenPageOptions } from "./page.js";
@@ -178,4 +178,8 @@ function remaining(deadline: number): number {
   const ms = deadline - Date.now();
   if (ms <= 0) throw new Error("Session run timed out.");
   return ms;
+}
+
+function hasCode(error: unknown, code: string): boolean {
+  return error instanceof Error && "code" in error && error.code === code;
 }

@@ -1,11 +1,8 @@
-import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import spawn from "nano-spawn";
 import type { Browser } from "playwright";
-import { hasCode } from "./errors.js";
 import { validateRunOptions, VITEXEC_TIMEOUT_MS } from "./options.js";
 
 export type OpenBrowserOptions = {
@@ -60,29 +57,7 @@ export async function openBrowser(options: OpenBrowserOptions = {}): Promise<Bro
     });
   }
   await ensureChromiumInstalled({ log: options.log });
-  // Playwright does not expose the launched process, so tag it to find it again in killBrowser().
-  const marker = `--vitexec-browser=${randomUUID()}`;
-  const browser = await chromium.launch({ channel: "chromium", ...launchOptions, args: [...args, marker] });
-  launchMarkers.set(browser, marker);
-  return browser;
-}
-
-const launchMarkers = new WeakMap<Browser, string>();
-
-/**
- * SIGKILL the process group of a browser launched by openBrowser(), for when browser.close() hangs.
- * Connected remote browsers and Windows are left alone.
- */
-export function killBrowser(browser: Browser): void {
-  const marker = launchMarkers.get(browser);
-  if (!marker || process.platform === "win32") return;
-  const line = execFileSync("ps", ["-A", "-ww", "-o", "pid=,args="], { encoding: "utf8" })
-    .split("\n").find(line => line.includes(marker));
-  if (!line) return;
-  // Playwright launches the browser detached, as the leader of its own process group.
-  try { process.kill(-Number.parseInt(line, 10), "SIGKILL"); } catch (error) {
-    if (!hasCode(error, "ESRCH")) throw error;
-  }
+  return chromium.launch({ channel: "chromium", ...launchOptions });
 }
 
 export function createRemoteBrowserHeaders(
@@ -138,7 +113,7 @@ async function pathExists(path: string): Promise<boolean> {
     await access(path);
     return true;
   } catch (error) {
-    if (hasCode(error, "ENOENT") || hasCode(error, "ENOTDIR")) return false;
+    if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR")) return false;
     throw error;
   }
 }
